@@ -1,0 +1,164 @@
+/* ── Element Plus 主题色覆盖 ── */
+:root {
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #4d82f0;
+  --el-color-primary-light-5: #7da5f5;
+  --el-color-primary-light-7: #aec8f9;
+  --el-color-primary-light-8: #c5d9fb;
+  --el-color-primary-light-9: #dceafd;
+  --el-color-primary-dark-2: #1e50bc;
+  --el-border-radius-base: 8px;
+}
+
+/* ── 设计系统变量 ── */
+:root {
+  --grad-primary: linear-gradient(135deg, #2563eb 0%, #3b82f6 50%, #60a5fa 100%);
+  --grad-primary-soft: linear-gradient(135deg, rgba(37,99,235,.12) 0%, rgba(96,165,250,.08) 100%);
+  --grad-accent: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --grad-success: linear-gradient(135deg, #18a058 0%, #22c55e 100%);
+  --grad-warm: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.04), 0 1px 3px rgba(0,0,0,.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.06), 0 2px 4px rgba(0,0,0,.04);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05);
+  --shadow-primary: 0 6px 20px rgba(37,99,235,.28);
+  --shadow-primary-hover: 0 10px 28px rgba(37,99,235,.38);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+}
+
+/* ── Reset ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family:
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#app { height: 100%; }
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(140,140,140,.32);
+  border-radius: 6px;
+  transition: background .2s;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(120,120,120,.5); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── 动画关键帧 ── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in-scale {
+  from { opacity: 0; transform: scale(.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes gradient-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* ── Markdown ── */
+.markdown-body {
+  line-height: 1.78;
+  word-break: break-word;
+  font-size: 14px;
+}
+.markdown-body p { margin: .4em 0; }
+.markdown-body p:first-child { margin-top: 0; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.6em; margin: .4em 0; }
+.markdown-body li { margin: .2em 0; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--el-color-primary);
+  padding: .3em .8em;
+  margin: .5em 0;
+  color: var(--el-text-color-secondary);
+  background: var(--grad-primary-soft);
+  border-radius: 0 6px 6px 0;
+}
+.markdown-body pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: .5em 0;
+}
+.markdown-body code {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: .88em;
+}
+.markdown-body :not(pre) > code {
+  background: var(--el-fill-color-light);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #d946ef;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: .5em 0;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--el-border-color);
+  padding: .4em .8em;
+  text-align: left;
+  font-size: 13px;
+}
+.markdown-body th {
+  background: var(--el-fill-color-light);
+  font-weight: 600;
+}
+.markdown-body strong { font-weight: 600; color: var(--el-text-color-primary); }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin: .8em 0 .3em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.2em; }
+.markdown-body h2 { font-size: 1.1em; }
+.markdown-body h3 { font-size: 1em; }
+
+/* ── 路由切换过渡 ── */
+.page-enter-active {
+  transition: opacity .3s ease, transform .3s ease;
+}
+.page-leave-active {
+  transition: opacity .2s ease, transform .2s ease;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+/* ── 通用过渡 ── */
+.fade-enter-active, .fade-leave-active { transition: opacity .25s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
