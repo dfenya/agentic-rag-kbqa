@@ -13,7 +13,7 @@ async def list_documents(
 ):
     container = get_container(request)
     items, total = container.document_service.list_documents(
-        kb_id=kb_id, q=q, page=page, page_size=page_size)
+        user_id, kb_id=kb_id, q=q, page=page, page_size=page_size)
     return DocumentListResponse(
         items=[DocumentResponse(
             id=d.id, filename=d.filename, kb_id=d.kb_id, status=d.status,

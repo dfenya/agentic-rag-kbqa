@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile, Depends
+from fastapi import APIRouter, File, Request, UploadFile, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.v1.deps import get_container, get_current_user
@@ -132,17 +132,18 @@ async def get_upload_status(upload_id: str, user_id: str = Depends(get_current_u
 
 
 @router.get("/uploads/{upload_id}/events")
-async def upload_events(upload_id: str, token: str = ""):
-    # EventSource 不支持自定义 header，token 走 query 参数
+async def upload_events(upload_id: str, token: str = "", request: Request = None):
     if not token:
-        from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Missing token")
     try:
         from app.services.auth_service import decode_token
         payload = decode_token(token)
+        user_id = payload["sub"]
     except Exception:
-        from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Invalid token")
+    container = get_container(request)
+    if not container.auth_service.get_user(user_id):
+        raise HTTPException(status_code=401, detail="用户不存在")
     import json
 
     async def event_gen():
