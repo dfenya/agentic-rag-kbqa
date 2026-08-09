@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column,
     DateTime,
     Float,
     ForeignKey,
@@ -12,9 +11,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):

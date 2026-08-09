@@ -225,6 +225,9 @@ class ChatService:
                             except Exception:
                                 pass
                         queue.put_nowait(format_sse("done", conversation_id=conv_id))
+                        if self._container.langfuse_handler:
+                            from langfuse import get_client
+                            get_client().flush()
                         return
 
                     # 流结束，收尾最后一个步骤

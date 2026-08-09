@@ -32,12 +32,6 @@ def create_agent_graph(
     checkpointer_path: str = ":memory:",
     old_checkpointer_conn=None,
 ):
-    """构建并编译完整的 RAG agent 图
-
-    llm: ChatOllama 实例
-    tools_list: ToolFactory 生成的工具列表
-    checkpointer_path: SqliteSaver 数据库路径
-    """
     if old_checkpointer_conn is not None:
         try:
             old_checkpointer_conn.close()

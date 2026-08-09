@@ -44,7 +44,6 @@ class IngestionPipeline:
         self._chunks_dir = Path(settings.storage.chunks_dir)
 
     def _dirs(self, kb_id: str | None):
-        suffix = f"/{kb_id}" if kb_id else ""
         upload = self._upload_dir / kb_id if kb_id else self._upload_dir
         md = self._md_dir / kb_id if kb_id else self._md_dir
         chunks = self._chunks_dir / kb_id if kb_id else self._chunks_dir
@@ -63,7 +62,6 @@ class IngestionPipeline:
         filename: str,
         *,
         progress: Optional[ProgressCallback] = None,
-        llm=None,
     ) -> dict:
         """处理一个上传文件，返回 {doc_id, status, ...}"""
         emit = progress or (lambda p, pc, m, e: None)

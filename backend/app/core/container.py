@@ -35,17 +35,20 @@ class Container:
         self.document_service: DocumentService | None = None
         self.long_term_memory_service: LongTermMemoryService | None = None
 
+        self.langfuse_handler = None
         self._graph = None
         self._checkpointer_conn = None
 
     def create_llm(self, **overrides) -> ChatOllama:
-        """创建 ChatOllama 实例，所有 LLM 调用都从这里走"""
-        return ChatOllama(
+        llm = ChatOllama(
             model=overrides.get("model", self.settings.llm.model),
             temperature=overrides.get("temperature", self.settings.llm.temperature),
             base_url=overrides.get("base_url", self.settings.llm.ollama_base_url),
             num_ctx=overrides.get("num_ctx", self.settings.llm.num_ctx),
         )
+        if self.langfuse_handler:
+            llm = llm.with_config(callbacks=[self.langfuse_handler])
+        return llm
 
     @property
     def graph(self):
@@ -81,6 +84,14 @@ class Container:
         self.long_term_memory_service = LongTermMemoryService(self.sqlite, self.long_term_memory_store)
 
         logger.info("container.services.ready")
+
+        from dotenv import load_dotenv
+        load_dotenv(".env.dev")
+        import os
+        if os.getenv("LANGFUSE_ENABLED", "").lower() in ("true", "1"):
+            from langfuse.langchain import CallbackHandler
+            self.langfuse_handler = CallbackHandler()
+            logger.info("container.langfuse.ready")
 
         # RAG 图需要 Ollama 在线才能编译
         try:

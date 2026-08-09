@@ -35,14 +35,9 @@ export const useDocumentsStore = defineStore('documents', () => {
     return result.upload_id
   }
 
-  async function refreshUploadStatus(uploadId: string) {
-    const data = await api.getUploadStatus(uploadId)
-    uploadTasks.value = data.tasks
-  }
-
   return {
     documents, uploadTasks, loading,
     fetchDocuments, removeDocument, retryDocument,
-    uploadFiles, refreshUploadStatus,
+    uploadFiles,
   }
 })

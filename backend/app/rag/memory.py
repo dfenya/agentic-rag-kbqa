@@ -62,7 +62,7 @@ def load_long_term_memories(
         # 从 SQLite 取完整记录，按 conversation_id 过滤后按 重要性×访问次数 排序
         mem_ids = [r["id"] for r in results]
         all_memories = {
-            m.id: m for m in sqlite.mem_list_by_ids(mem_ids, conversation_id=conversation_id or None)
+            m.id: m for m in sqlite.mem_list_by_ids(mem_ids, user_id, conversation_id=conversation_id or None)
         }
         relevant = [all_memories[mid] for mid in mem_ids if mid in all_memories]
         if not relevant:

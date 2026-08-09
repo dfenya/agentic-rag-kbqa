@@ -121,6 +121,22 @@ class SqliteStore:
                          .limit(page_size).all()
             return items, total
 
+    def docs_list_by_user(
+        self, user_id: str, *, q: str | None = None,
+        page: int = 1, page_size: int = 50,
+    ) -> tuple[list[Document], int]:
+        with self.session() as s:
+            query = s.query(Document).join(
+                KnowledgeBase, Document.kb_id == KnowledgeBase.id, isouter=True
+            ).filter(KnowledgeBase.user_id == user_id)
+            if q:
+                query = query.filter(Document.filename.contains(q))
+            total = query.count()
+            items = query.order_by(Document.created_at.desc()) \
+                         .offset((page - 1) * page_size) \
+                         .limit(page_size).all()
+            return items, total
+
     # ── 知识库 ──
 
     def kb_create(self, name: str, user_id: str, description: str | None = None) -> KnowledgeBase:
@@ -277,11 +293,14 @@ class SqliteStore:
     def mem_list_by_ids(
         self,
         mem_ids: list[str],
+        user_id: str,
         conversation_id: str | None = None,
     ) -> list[LongTermMemory]:
-        """按 ID 列表取记忆，可选按会话隔离过滤"""
         with self.session() as s:
-            q = s.query(LongTermMemory).filter(LongTermMemory.id.in_(mem_ids))
+            q = s.query(LongTermMemory).filter(
+                LongTermMemory.id.in_(mem_ids),
+                LongTermMemory.user_id == user_id,
+            )
             if conversation_id:
                 q = q.filter(LongTermMemory.source_conversation_id == conversation_id)
             return q.all()

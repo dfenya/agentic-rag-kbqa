@@ -24,14 +24,20 @@ class DocumentService:
         self._chunks_dir = Path(settings.storage.chunks_dir)
 
     def list_documents(
-        self,
+        self, user_id: str,
         *,
         kb_id: Optional[str] = None,
         q: Optional[str] = None,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[Document], int]:
-        return self._db.docs_list(kb_id=kb_id, q=q, page=page, page_size=page_size)
+        if kb_id:
+            kb = self._db.kb_by_id(kb_id)
+            if not kb or kb.user_id != user_id:
+                return [], 0
+            return self._db.docs_list(kb_id=kb_id, q=q, page=page, page_size=page_size)
+        # 不带 kb_id 时只返回该用户的文档
+        return self._db.docs_list_by_user(user_id, q=q, page=page, page_size=page_size)
 
     def _remove_files(self, doc_id: str, kb_id: str | None = None):
         dirs = [self._upload_dir, self._md_dir, self._chunks_dir]
