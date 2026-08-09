@@ -1,5 +1,15 @@
-"""文档摄入管线：去重 → PDF 提取 → 分块 → 写入 Qdrant"""
+"""文档摄入管线：去重 → PDF 提取 → 分块 → 写入 Qdrant
 
+中间文件保存：
+  data/uploads/  原始 PDF
+  data/markdown/ MinerU 转换后的 Markdown
+  data/chunks/   切分后的 chunk JSON
+
+规则：未走完全流程则不留任何中间文件。
+"""
+
+import asyncio
+import json
 import structlog
 from pathlib import Path
 from typing import Callable, Optional
@@ -34,6 +44,17 @@ class IngestionPipeline:
             child_chunk_overlap=settings.rag.child_chunk_overlap,
         )
         self._upload_dir = Path(settings.storage.upload_dir)
+        self._md_dir = Path(settings.storage.markdown_dir)
+        self._chunks_dir = Path(settings.storage.chunks_dir)
+
+        for d in [self._upload_dir, self._md_dir, self._chunks_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+
+    def _cleanup_files(self, doc_id: str):
+        """删除该 doc_id 在所有目录下的中间文件"""
+        for d in [self._upload_dir, self._md_dir, self._chunks_dir]:
+            for f in d.glob(f"{doc_id}.*"):
+                f.unlink(missing_ok=True)
 
     async def process_file(
         self,
@@ -45,11 +66,12 @@ class IngestionPipeline:
     ) -> dict:
         """处理一个上传文件，返回 {doc_id, status, ...}"""
         emit = progress or (lambda p, pc, m, e: None)
+        current_phase = ["dedup"]
 
         # 阶段 1: 读文件 + 去重
         emit("dedup", 0.0, f"正在检查重复: {filename}")
         raw_bytes = Path(filepath).read_bytes()
-        is_dup, existing = check_duplicate(self._sqlite, raw_bytes, filename)
+        is_dup, existing = check_duplicate(self._sqlite, raw_bytes, filename, kb_id=self._kb_id)
         if is_dup:
             logger.info("ingestion.duplicate", filename=filename, existing=existing.id)
             emit("dedup", 1.0, f"文件重复，已跳过: {filename}", {"duplicate_of": existing.id})
@@ -61,41 +83,59 @@ class IngestionPipeline:
         doc = register_document(self._sqlite, filename, raw_bytes, kb_id=self._kb_id)
         doc_id = doc.id
         emit("dedup", 1.0, "去重通过")
+        await asyncio.sleep(0)
 
         try:
-            # 阶段 2: PDF → Markdown
-            emit("extract", 0.0, f"正在提取文本: {filename}")
             suffix = Path(filename).suffix.lower()
 
+            if suffix == ".pdf":
+                upload_path = self._upload_dir / f"{doc_id}.pdf"
+                upload_path.write_bytes(raw_bytes)
+
+            # 阶段 2: PDF → Markdown
+            current_phase[0] = "extract"
+            emit("extract", 0.0, f"MinerU 解析中: {filename}")
+            await asyncio.sleep(0)
+
+            target = self._md_dir / f"{doc_id}.md"
             if suffix == ".md":
-                md_path = self._upload_dir / f"{doc_id}.md"
-                md_path.write_bytes(raw_bytes)
+                target.write_bytes(raw_bytes)
             else:
-                pdf_tmp = self._upload_dir / f"{doc_id}.pdf"
-                pdf_tmp.write_bytes(raw_bytes)
-                md_path = pdf_to_markdown(pdf_tmp, self._upload_dir)
-                target = self._upload_dir / f"{doc_id}.md"
+                md_path = await pdf_to_markdown(upload_path, self._md_dir)
                 if md_path != target:
                     md_path.rename(target)
-                    md_path = target
-                pdf_tmp.unlink(missing_ok=True)
 
-            emit("extract", 1.0, "文本提取完成")
+            emit("extract", 1.0, "MinerU 解析完成")
+            await asyncio.sleep(0)
 
             # 阶段 3: 分块
+            current_phase[0] = "chunk"
             emit("chunk", 0.0, "正在切分文档...")
-            source_name = Path(filename).with_suffix(".pdf").name if suffix == ".pdf" else filename
+            await asyncio.sleep(0)
+            source_name = f"{Path(filename).stem}.pdf" if suffix == ".pdf" else filename
             sha = compute_sha256(raw_bytes)
             parent_pairs, child_docs = self._chunker.chunk_file(
-                md_path, doc_id, source_name, sha, kb_id=self._kb_id)
+                target, doc_id, source_name, sha, kb_id=self._kb_id)
             emit("chunk", 1.0, f"切分完成: {len(parent_pairs)} 个父块, {len(child_docs)} 个子块",
                  {"parent_count": len(parent_pairs), "child_count": len(child_docs)})
+            await asyncio.sleep(0)
+
+            # 保存 chunk 数据
+            chunks_path = self._chunks_dir / f"{doc_id}.json"
+            chunks_path.write_text(json.dumps({
+                "parents": [{"id": pid, "content": pdoc.page_content, "metadata": pdoc.metadata}
+                            for pid, pdoc in parent_pairs],
+                "children": [{"content": c.page_content, "metadata": c.metadata} for c in child_docs],
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
 
             # 阶段 4: 写入 Qdrant
+            current_phase[0] = "store"
             emit("store", 0.0, "正在写入向量数据库...")
+            await asyncio.sleep(0)
             self._parent.save_many(parent_pairs)
             self._qdrant.add_documents(child_docs)
             emit("store", 1.0, "写入完成")
+            await asyncio.sleep(0)
 
             self._sqlite.doc_update(doc_id,
                 status=DocumentStatus.READY.value,
@@ -112,6 +152,7 @@ class IngestionPipeline:
 
         except Exception as e:
             logger.exception("ingestion.error", doc_id=doc_id, filename=filename)
-            self._sqlite.doc_update(doc_id, status=DocumentStatus.ERROR.value, error=str(e))
-            emit("error", 0.0, f"处理失败: {str(e)}")
+            self._sqlite.doc_delete(doc_id)
+            self._cleanup_files(doc_id)
+            emit(current_phase[0], 1.0, f"处理失败: {str(e)}")
             return {"doc_id": doc_id, "filename": filename, "status": DocumentStatus.ERROR.value, "error": str(e)}

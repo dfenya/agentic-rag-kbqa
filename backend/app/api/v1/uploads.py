@@ -150,6 +150,6 @@ async def upload_events(upload_id: str):
             if all_done:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

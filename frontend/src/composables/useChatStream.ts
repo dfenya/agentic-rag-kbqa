@@ -12,8 +12,8 @@ export function useChatStream() {
   function abort() {
     abortController?.abort()
     abortController = null
-    store.isStreaming = false
     store.finishStreaming()
+    store.resetStreamingUI()
   }
 
   async function streamFromResponse(response: Response) {

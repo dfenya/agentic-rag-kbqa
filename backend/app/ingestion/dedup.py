@@ -20,10 +20,11 @@ def check_duplicate(
     db: SqliteStore,
     content: bytes,
     filename: str,
+    kb_id: str | None = None,
 ) -> tuple[bool, Optional[Document]]:
-    """检查内容是否已存在，返回 (是否重复, 已有文档)"""
+    """检查同 KB 内是否已存在相同内容的文件，返回 (是否重复, 已有文档)"""
     sha = compute_sha256(content)
-    existing = db.doc_by_sha256(sha)
+    existing = db.doc_by_sha256(sha, kb_id=kb_id)
     if existing:
         return True, existing
     return False, None

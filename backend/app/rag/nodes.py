@@ -44,11 +44,11 @@ from app.core.config import get_settings
 def load_long_term_memory_node(state: State, long_term_memory_store, sqlite_store):
     """每轮对话开始前，从长期记忆中语义检索相关片段，注入到 long_term_memory_context
 
-    短期/工作记忆（当前对话上下文）由 LangGraph 的 SqliteSaver checkpointer 持久化，
-    无需此处处理；本节点只负责把跨对话的长期记忆（用户偏好/FAQ/历史摘要）按当前
-    问题做语义检索，命中片段拼成上下文供下游 rewrite/orchestrator/aggregate 使用。
+    按 conversation_id 做会话级隔离，只加载当前会话内的长期记忆，
+    不会跨会话泄露用户偏好/FAQ/摘要。
     """
     settings = get_settings()
+    conv_id = state.get("conversation_id", "")
     last_msg = state["messages"][-1] if state["messages"] else None
     if not last_msg:
         return {"long_term_memory_context": ""}
@@ -59,6 +59,7 @@ def load_long_term_memory_node(state: State, long_term_memory_store, sqlite_stor
         long_term_memory_store=long_term_memory_store,
         sqlite=sqlite_store,
         settings=settings,
+        conversation_id=conv_id,
     )
     return {"long_term_memory_context": ctx}
 

@@ -13,11 +13,20 @@ router = APIRouter(prefix="/memories", tags=["memories"])
 async def list_memories(type: str | None = None, q: str | None = None, request: Request = None):
     container = get_container(request)
     mems = container.long_term_memory_service.list_memories(mem_type=type, q=q)
+    # 查所有涉及到的会话标题
+    conv_ids = {m.source_conversation_id for m in mems if m.source_conversation_id}
+    conv_titles = {}
+    for cid in conv_ids:
+        conv = container.conversation_service.get(cid)
+        if conv:
+            conv_titles[cid] = conv.title or cid[:8]
     return [
         LongTermMemoryResponse(
             id=m.id, type=m.type, content=m.content,
             keywords=json.loads(m.keywords_json or "[]"),
             importance=m.importance, access_count=m.access_count,
+            source_conversation_id=m.source_conversation_id,
+            conversation_title=conv_titles.get(m.source_conversation_id) if m.source_conversation_id else None,
             created_at=m.created_at, updated_at=m.updated_at,
         ) for m in mems
     ]

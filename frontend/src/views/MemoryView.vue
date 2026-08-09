@@ -79,6 +79,16 @@ const typeColor: Record<string, string> = {
         </template>
       </el-table-column>
       <el-table-column label="内容" prop="content" show-overflow-tooltip />
+      <el-table-column label="来源会话" width="160">
+        <template #default="{ row }">
+          <template v-if="row.conversation_title">
+            <el-tooltip :content="row.source_conversation_id" placement="top" :show-after="400">
+              <span class="conv-link">{{ row.conversation_title }}</span>
+            </el-tooltip>
+          </template>
+          <span v-else class="no-conv">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="重要性" prop="importance" width="72" align="center">
         <template #default="{ row }">
           <el-tag :type="row.importance >= .7 ? 'danger' : row.importance >= .4 ? 'warning' : 'success'" size="default" effect="plain">
@@ -138,4 +148,12 @@ const typeColor: Record<string, string> = {
 .filter { margin-bottom: 14px; }
 .table { margin-top: 4px; }
 .empty { margin-top: 60px; }
+.conv-link {
+  cursor: pointer;
+  color: var(--el-color-primary);
+  font-size: 13px;
+}
+.no-conv {
+  color: var(--el-text-color-placeholder);
+}
 </style>

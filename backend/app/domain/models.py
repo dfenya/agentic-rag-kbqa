@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
@@ -50,13 +51,17 @@ class Document(Base):
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, default=0)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(32), default="未分类")
     category_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(16), default="processing")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     parent_count: Mapped[int] = mapped_column(Integer, default=0)
     child_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("sha256", "kb_id", name="uq_documents_sha256_kb_id"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 

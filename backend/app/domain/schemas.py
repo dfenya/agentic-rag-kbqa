@@ -118,6 +118,8 @@ class LongTermMemoryResponse(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     importance: float = 0.5
     access_count: int = 0
+    source_conversation_id: str | None = None
+    conversation_title: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -48,9 +48,12 @@ class SqliteStore:
 
     # ── 文档 ──
 
-    def doc_by_sha256(self, sha256: str) -> Document | None:
+    def doc_by_sha256(self, sha256: str, kb_id: str | None = None) -> Document | None:
         with self.session() as s:
-            return s.query(Document).filter_by(sha256=sha256).first()
+            q = s.query(Document).filter_by(sha256=sha256)
+            if kb_id is not None:
+                q = q.filter_by(kb_id=kb_id)
+            return q.first()
 
     def doc_by_id(self, doc_id: str) -> Document | None:
         with self.session() as s:
@@ -247,6 +250,18 @@ class SqliteStore:
     def mem_all(self) -> list[LongTermMemory]:
         with self.session() as s:
             return s.query(LongTermMemory).all()
+
+    def mem_list_by_ids(
+        self,
+        mem_ids: list[str],
+        conversation_id: str | None = None,
+    ) -> list[LongTermMemory]:
+        """按 ID 列表取记忆，可选按会话隔离过滤"""
+        with self.session() as s:
+            q = s.query(LongTermMemory).filter(LongTermMemory.id.in_(mem_ids))
+            if conversation_id:
+                q = q.filter(LongTermMemory.source_conversation_id == conversation_id)
+            return q.all()
 
     def mem_count(self) -> int:
         with self.session() as s:

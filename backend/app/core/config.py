@@ -35,6 +35,8 @@ class StorageSettings(BaseSettings):
     qdrant_url: str = ""
     sqlite_path: str = str(_BASE_DIR / "data" / "app.db")
     upload_dir: str = str(_BASE_DIR / "data" / "uploads")
+    markdown_dir: str = str(_BASE_DIR / "data" / "markdown")
+    chunks_dir: str = str(_BASE_DIR / "data" / "chunks")
 
 
 class EmbeddingSettings(BaseSettings):

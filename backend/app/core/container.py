@@ -74,7 +74,7 @@ class Container:
         logger.info("container.stores.ready")
 
         self.conversation_service = ConversationService(self.sqlite)
-        self.document_service = DocumentService(self.sqlite, self.qdrant, self.parent)
+        self.document_service = DocumentService(self.sqlite, self.qdrant, self.parent, self.settings)
         self.long_term_memory_service = LongTermMemoryService(self.sqlite, self.long_term_memory_store)
 
         logger.info("container.services.ready")

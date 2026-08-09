@@ -66,34 +66,33 @@ async function handleDeleteKB(kbId: string, kbName: string) {
   }).catch(() => {})
 }
 
-// 处理阶段标签
-const phaseLabels: Record<string, string> = {
-  dedup:   '去重检查',
-  extract: '文本提取',
-  chunk:   '文档分块',
-  store:   '写入向量数据库',
-  error:   '处理失败',
-}
+// 处理阶段
+const pipelineSteps = [
+  { key: 'dedup',   title: '去重检查' },
+  { key: 'extract', title: 'MinerU 解析' },
+  { key: 'chunk',   title: '文档分块' },
+  { key: 'store',   title: '向量入库' },
+]
+const stepKeyIndex: Record<string, number> = { dedup: 0, extract: 1, chunk: 2, store: 3 }
 
-function getPhaseLabel(phase: string | null, status: string): string {
-  if (status === 'ready') return '处理完成'
-  if (status === 'duplicate') return '文件重复，已跳过'
-  if (status === 'error') return '处理失败'
-  if (!phase) return '等待中…'
-  return phaseLabels[phase] || phase
+function getStepStatus(stepIdx: number, phase: string | null, status: string): '' | 'success' | 'process' | 'error' | 'wait' {
+  if (status === 'ready' || status === 'duplicate') return 'success'
+  if (status === 'error') {
+    // 找到 failure 发生在哪一步
+    const current = phase ? (stepKeyIndex[phase] ?? 0) : 0
+    if (stepIdx < current) return 'success'
+    if (stepIdx === current) return 'error'
+    return 'wait'
+  }
+  // pending 或无 phase 时，默认第一步 active
+  const current = phase ? (stepKeyIndex[phase] ?? 0) : 0
+  if (stepIdx < current) return 'success'
+  if (stepIdx === current) return 'process'
+  return 'wait'
 }
 
 function getFileIcon(filename: string): string {
   return filename.toLowerCase().endsWith('.pdf') ? '📄' : '📝'
-}
-
-function getProgressStatus(status: string): '' | 'success' | 'exception' | 'warning' {
-  switch (status) {
-    case 'ready':      return 'success'
-    case 'error':      return 'exception'
-    case 'duplicate':  return 'warning'
-    default:           return ''
-  }
 }
 
 function getTaskTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -121,18 +120,12 @@ async function handleUpload(files: File[]) {
   uploading.value = true
   store.uploadTasks = []
   try {
-    // 上传文件，后端立即返回 upload_id（任务状态为 pending）
     const uploadId = await store.uploadFiles(files, selectedKbId.value || undefined)
-    // 轮询上传状态，直到所有任务处理完成（非 pending/processing）
-    const tasks = await pollUploadStatus(uploadId)
+    const tasks = await watchUploadSSE(uploadId)
     await refresh()
-    // 根据后端实际处理结果显示提示
     const success = tasks.filter(t => t.status === 'ready' || t.status === 'duplicate')
     const failed = tasks.filter(t => t.status === 'error')
-    const pending = tasks.filter(t => t.status === 'pending' || t.status === 'processing')
-    if (pending.length > 0) {
-      ElMessage.warning(`处理超时 · ${pending.length} 个文件仍在处理中，请稍后刷新查看`)
-    } else if (failed.length === 0) {
+    if (failed.length === 0) {
       ElMessage.success(`上传完成 · 成功 ${success.length} 个文件`)
     } else if (success.length === 0) {
       ElMessage.error(`上传失败 · ${failed.length} 个文件处理失败`)
@@ -146,17 +139,30 @@ async function handleUpload(files: File[]) {
   }
 }
 
-// 轮询上传任务状态，直到全部完成或超时
-async function pollUploadStatus(uploadId: string): Promise<UploadTaskInfo[]> {
-  const maxAttempts = 120
-  for (let i = 0; i < maxAttempts; i++) {
-    await store.refreshUploadStatus(uploadId)
-    const tasks = store.uploadTasks
-    const allDone = tasks.length > 0 && tasks.every(t => t.status !== 'pending' && t.status !== 'processing')
-    if (allDone) return tasks
-    await new Promise(r => setTimeout(r, 1000))
-  }
-  return store.uploadTasks
+// SSE 实时监听上传进度，直到全部完成
+function watchUploadSSE(uploadId: string): Promise<UploadTaskInfo[]> {
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(`/api/v1/uploads/${uploadId}/events`)
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data)
+      if (data.type === 'done') {
+        es.close()
+        resolve(store.uploadTasks)
+        return
+      }
+      // 更新对应 task
+      const idx = store.uploadTasks.findIndex(t => t.filename === data.filename)
+      if (idx >= 0) {
+        store.uploadTasks[idx] = { ...store.uploadTasks[idx], ...data }
+      } else {
+        store.uploadTasks = [...store.uploadTasks, data]
+      }
+    }
+    es.onerror = () => {
+      es.close()
+      reject(new Error('SSE 连接断开'))
+    }
+  })
 }
 
 async function handleDeleteDoc(id: string, filename: string) {
@@ -255,40 +261,50 @@ const statusMap: Record<string, { type: 'success' | 'warning' | 'danger' | 'info
       <el-dialog
         v-model="uploading"
         title="正在处理文件…"
-        width="500px"
+        width="560px"
         align-center
         :close-on-click-modal="false"
         :close-on-press-escape="false"
         :show-close="false"
         class="upload-dialog"
       >
-        <div v-if="!store.uploadTasks.length" class="upload-item-phase" style="padding: 8px 0;">
-          <el-icon class="is-loading" :size="14"><Loading /></el-icon>
-          正在上传文件…
-        </div>
-        <div
-          v-for="task in store.uploadTasks"
-          :key="task.filename"
-          class="upload-item"
-        >
-          <div class="upload-item-top">
-            <span class="upload-item-icon">{{ getFileIcon(task.filename) }}</span>
-            <span class="upload-item-name">{{ task.filename }}</span>
-            <el-tag :type="getTaskTagType(task.status)" size="small" effect="light" round>
+        <template v-if="!store.uploadTasks.length">
+          <div style="text-align: center; color: var(--el-text-color-secondary); padding-bottom: 8px;">
+            <el-icon class="is-loading" :size="14"><Loading /></el-icon>
+            正在上传文件…
+          </div>
+          <el-steps :active="-1" align-center style="margin: 12px 0;">
+            <el-step v-for="s in pipelineSteps" :key="s.key" :title="s.title" status="wait" />
+          </el-steps>
+        </template>
+        <template v-for="task in store.uploadTasks" :key="task.filename">
+          <div class="upload-filename">
+            {{ getFileIcon(task.filename) }} {{ task.filename }}
+            <el-tag
+              v-if="task.status !== 'processing' && task.status !== 'pending'"
+              :type="getTaskTagType(task.status)"
+              size="small"
+              effect="light"
+              round
+              style="margin-left: 8px;"
+            >
               {{ getTaskTagLabel(task.status) }}
             </el-tag>
           </div>
-          <el-progress
-            :percentage="Math.round(task.percent * 100)"
-            :status="getProgressStatus(task.status)"
-            :stroke-width="6"
-            :show-text="false"
-          />
-          <div class="upload-item-phase">
-            {{ getPhaseLabel(task.phase, task.status) }}
-          </div>
+          <el-steps
+            :active="task.phase ? (stepKeyIndex[task.phase] ?? 0) : 0"
+            align-center
+            style="margin: 12px 0;"
+          >
+            <el-step
+              v-for="(s, i) in pipelineSteps"
+              :key="s.key"
+              :title="s.title"
+              :status="getStepStatus(i, task.phase, task.status)"
+            />
+          </el-steps>
           <div v-if="task.error" class="upload-item-error">{{ task.error }}</div>
-        </div>
+        </template>
       </el-dialog>
 
       <el-table v-if="filteredDocs.length" :data="filteredDocs" size="default" class="doc-table">
@@ -388,35 +404,12 @@ const statusMap: Record<string, { type: 'success' | 'warning' | 'danger' | 'info
 .doc-table { margin-top: 4px; }
 .doc-empty { margin-top: 40px; }
 
-/* 上传进度弹窗内容样式 */
-.upload-item {
-  padding: 12px 0;
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-.upload-item:first-of-type {
-  border-top: none;
-  padding-top: 0;
-}
-.upload-item-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.upload-item-icon { font-size: 18px; flex-shrink: 0; }
-.upload-item-name {
-  flex: 1;
-  font-size: 13px;
+/* 上传进度弹窗 */
+.upload-filename {
+  font-size: 14px;
   font-weight: 500;
   color: var(--el-text-color-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.upload-item-phase {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-top: 4px;
+  padding-bottom: 4px;
 }
 .upload-item-error {
   font-size: 12px;

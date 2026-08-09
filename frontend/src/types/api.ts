@@ -137,7 +137,9 @@ export interface MessageItem {
 // ── 长期记忆 ──
 export interface LongTermMemoryItem {
   id: string; type: string; content: string; keywords: string[]
-  importance: number; access_count: number; created_at: string; updated_at: string
+  importance: number; access_count: number
+  source_conversation_id: string | null; conversation_title: string | null
+  created_at: string; updated_at: string
 }
 
 // ── 设置 ──

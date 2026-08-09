@@ -1,0 +1,11 @@
+# MinerU API 配置
+mineru:
+  host: "127.0.0.1"
+  port: 8085
+  timeout: 600
+  request:
+    backend: "pipeline"
+    parse_method: "auto"
+    lang_list: "ch"
+    return_md: "true"
+    formula_enable: "false"

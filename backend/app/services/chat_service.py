@@ -89,12 +89,16 @@ class ChatService:
                         graph.update_state(config, {"messages": [HumanMessage(content=message.strip())]})
                         stream_input = None
                     else:
-                        stream_input = {"messages": [HumanMessage(content=message.strip())]}
+                        stream_input = {
+                            "messages": [HumanMessage(content=message.strip())],
+                            "conversation_id": conv_id,
+                        }
 
                     prev_node_key = None
                     prev_start_ts = None
                     flow_steps: list[dict] = []
                     current_step: dict | None = None
+                    partial_text = ""  # 累积 LLM 输出，取消时用于持久化
 
                     for chunk, metadata in graph.stream(
                         stream_input, config=config, stream_mode="messages"
@@ -190,7 +194,36 @@ class ChatService:
                             ))
 
                         elif isinstance(chunk, AIMessageChunk) and chunk.content and node not in SYSTEM_NODES:
+                            partial_text += chunk.content
                             queue.put_nowait(format_sse("content", delta=chunk.content))
+
+                    # 用户取消：持久化已生成的部分内容后结束，避免 DB 中只有 user 消息
+                    if cancel_event.is_set():
+                        # 优先用已累积的文本，fallback 到 checkpoint（非 LLM 节点取消时）
+                        text_to_persist = partial_text
+                        if not text_to_persist:
+                            try:
+                                final_state = graph.get_state(config)
+                                final_msgs = final_state.values.get("messages", [])
+                                for msg in reversed(final_msgs):
+                                    if isinstance(msg, AIMessage) and msg.content and not getattr(msg, 'tool_calls', None):
+                                        text_to_persist = msg.content
+                                        break
+                            except Exception:
+                                pass
+                        if text_to_persist:
+                            try:
+                                sources = extract_sources([])  # 取消时不做复杂的 source 提取
+                                flow_steps_json = json.dumps(flow_steps, ensure_ascii=False) if flow_steps else None
+                                self._container.conversation_service.add_assistant_message(
+                                    conv_id, text_to_persist,
+                                    sources_json=None,
+                                    flow_steps_json=flow_steps_json,
+                                )
+                            except Exception:
+                                pass
+                        queue.put_nowait(format_sse("done", conversation_id=conv_id))
+                        return
 
                     # 流结束，收尾最后一个步骤
                     if current_step is not None:
@@ -281,9 +314,9 @@ class ChatService:
                     if json.loads(event_str.lstrip("data: ").strip()).get("type") == "done":
                         break
             except asyncio.CancelledError:
-                # 客户端断开（切会话、刷新页面）：后台线程继续跑完 LLM，
-                # 完整回答会持久化到 DB，用户切回来时从 loadMessages 加载
+                # 客户端主动断开（点击停止、切会话、刷新页面）：通知后台线程取消生成
                 logger.info("chat.stream.client_disconnected", conv_id=conv_id)
+                cancel_event.set()
                 while not queue.empty():
                     try:
                         queue.get_nowait()
@@ -311,6 +344,7 @@ class ChatService:
             long_term_memory_store=self._container.long_term_memory_store,
             sqlite=self._container.sqlite,
             settings=settings,
+            conversation_id=conv_id,
         )
         system_text = PLAIN_LLM_SYSTEM_PROMPT
         if memory_context:
@@ -345,6 +379,21 @@ class ChatService:
             logger.exception("chat.plain.llm.error")
             queue.put_nowait(format_sse("error", message=f"LLM 生成失败: {e}"))
             queue.put_nowait(format_sse("done"))
+            return
+
+        # 用户取消：持久化已生成的部分内容后结束
+        if cancel_event.is_set():
+            if assistant_text:
+                try:
+                    flow_steps_json = json.dumps(flow_steps, ensure_ascii=False) if flow_steps else None
+                    self._container.conversation_service.add_assistant_message(
+                        conv_id, assistant_text,
+                        sources_json=None,
+                        flow_steps_json=flow_steps_json,
+                    )
+                except Exception:
+                    pass
+            queue.put_nowait(format_sse("done", conversation_id=conv_id))
             return
 
         duration_ms = round((time.perf_counter() - start_ts) * 1000)
