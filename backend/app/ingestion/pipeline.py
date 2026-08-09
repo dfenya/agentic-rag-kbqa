@@ -1,11 +1,7 @@
-"""文档摄入管线：去重 → PDF 提取 → 分块 → 写入 Qdrant
+"""文档摄入管线：去重 → MinerU 解析 → 父子分块 → Qdrant 写入。
 
-中间文件保存：
-  data/uploads/  原始 PDF
-  data/markdown/ MinerU 转换后的 Markdown
-  data/chunks/   切分后的 chunk JSON
-
-规则：未走完全流程则不留任何中间文件。
+中间文件：data/uploads (PDF) / data/markdown (MD) / data/chunks (JSON)。
+失败时自动清理所有中间文件。
 """
 
 import asyncio
@@ -47,12 +43,17 @@ class IngestionPipeline:
         self._md_dir = Path(settings.storage.markdown_dir)
         self._chunks_dir = Path(settings.storage.chunks_dir)
 
-        for d in [self._upload_dir, self._md_dir, self._chunks_dir]:
+    def _dirs(self, kb_id: str | None):
+        suffix = f"/{kb_id}" if kb_id else ""
+        upload = self._upload_dir / kb_id if kb_id else self._upload_dir
+        md = self._md_dir / kb_id if kb_id else self._md_dir
+        chunks = self._chunks_dir / kb_id if kb_id else self._chunks_dir
+        for d in [upload, md, chunks]:
             d.mkdir(parents=True, exist_ok=True)
+        return upload, md, chunks
 
-    def _cleanup_files(self, doc_id: str):
-        """删除该 doc_id 在所有目录下的中间文件"""
-        for d in [self._upload_dir, self._md_dir, self._chunks_dir]:
+    def _cleanup_files(self, doc_id: str, upload_dir, md_dir, chunks_dir):
+        for d in [upload_dir, md_dir, chunks_dir]:
             for f in d.glob(f"{doc_id}.*"):
                 f.unlink(missing_ok=True)
 
@@ -85,11 +86,13 @@ class IngestionPipeline:
         emit("dedup", 1.0, "去重通过")
         await asyncio.sleep(0)
 
+        upload_dir, md_dir, chunks_dir = self._dirs(self._kb_id)
+
         try:
             suffix = Path(filename).suffix.lower()
 
             if suffix == ".pdf":
-                upload_path = self._upload_dir / f"{doc_id}.pdf"
+                upload_path = upload_dir / f"{doc_id}.pdf"
                 upload_path.write_bytes(raw_bytes)
 
             # 阶段 2: PDF → Markdown
@@ -97,11 +100,11 @@ class IngestionPipeline:
             emit("extract", 0.0, f"MinerU 解析中: {filename}")
             await asyncio.sleep(0)
 
-            target = self._md_dir / f"{doc_id}.md"
+            target = md_dir / f"{doc_id}.md"
             if suffix == ".md":
                 target.write_bytes(raw_bytes)
             else:
-                md_path = await pdf_to_markdown(upload_path, self._md_dir)
+                md_path = await pdf_to_markdown(upload_path, md_dir)
                 if md_path != target:
                     md_path.rename(target)
 
@@ -121,7 +124,7 @@ class IngestionPipeline:
             await asyncio.sleep(0)
 
             # 保存 chunk 数据
-            chunks_path = self._chunks_dir / f"{doc_id}.json"
+            chunks_path = chunks_dir / f"{doc_id}.json"
             chunks_path.write_text(json.dumps({
                 "parents": [{"id": pid, "content": pdoc.page_content, "metadata": pdoc.metadata}
                             for pid, pdoc in parent_pairs],
@@ -153,6 +156,6 @@ class IngestionPipeline:
         except Exception as e:
             logger.exception("ingestion.error", doc_id=doc_id, filename=filename)
             self._sqlite.doc_delete(doc_id)
-            self._cleanup_files(doc_id)
+            self._cleanup_files(doc_id, upload_dir, md_dir, chunks_dir)
             emit(current_phase[0], 1.0, f"处理失败: {str(e)}")
             return {"doc_id": doc_id, "filename": filename, "status": DocumentStatus.ERROR.value, "error": str(e)}

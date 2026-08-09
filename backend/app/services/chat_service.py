@@ -56,6 +56,7 @@ class ChatService:
         *,
         conversation_id: Optional[str] = None,
         kb_id: Optional[str] = None,
+        user_id: str = "",
     ) -> AsyncGenerator[str, None]:
         """SSE 事件生成器，给 POST /chat/stream 用"""
         async with self._semaphore:
@@ -67,7 +68,7 @@ class ChatService:
                 try:
                     # 没选知识库 → 纯 LLM 对话，不走检索和图
                     if not kb_id:
-                        self._run_plain_llm(conv_id, message.strip(), queue, cancel_event)
+                        self._run_plain_llm(conv_id, message.strip(), queue, cancel_event, user_id=user_id)
                         return
 
                     config = {
@@ -81,7 +82,7 @@ class ChatService:
                         queue.put_nowait(format_sse("done"))
                         return
 
-                    self._begin_turn(conv_id, message.strip(), queue)
+                    self._begin_turn(conv_id, message.strip(), queue, user_id=user_id)
 
                     # 如果是从 clarification 中断恢复的，注入用户回复后继续
                     current_state = graph.get_state(config)
@@ -92,6 +93,7 @@ class ChatService:
                         stream_input = {
                             "messages": [HumanMessage(content=message.strip())],
                             "conversation_id": conv_id,
+                            "user_id": user_id,
                         }
 
                     prev_node_key = None
@@ -280,6 +282,8 @@ class ChatService:
                             if assistant_text:
                                 try:
                                     sources = extract_sources(final_msgs)
+                                    if sources:
+                                        queue.put_nowait(format_sse("sources", sources=sources))
                                     sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
                                     flow_steps_json = json.dumps(flow_steps, ensure_ascii=False) if flow_steps else None
                                     self._container.conversation_service.add_assistant_message(
@@ -293,7 +297,7 @@ class ChatService:
                                 except Exception as e:
                                     logger.exception("chat.persist.error", conv_id=conv_id, error=str(e))
 
-                                self._extract_memories(message.strip(), assistant_text, conv_id)
+                                self._extract_memories(message.strip(), assistant_text, conv_id, user_id=user_id)
                         except Exception:
                             pass
 
@@ -323,11 +327,11 @@ class ChatService:
                     except Exception:
                         pass
 
-    def _run_plain_llm(self, conv_id: str, user_msg: str, queue: asyncio.Queue, cancel_event: threading.Event) -> None:
+    def _run_plain_llm(self, conv_id: str, user_msg: str, queue: asyncio.Queue, cancel_event: threading.Event, user_id: str = "") -> None:
         """纯 LLM 对话：不走 LangGraph，直接调 Ollama 流式生成"""
         settings = get_settings()
 
-        self._begin_turn(conv_id, user_msg, queue)
+        self._begin_turn(conv_id, user_msg, queue, user_id=user_id)
 
         queue.put_nowait(format_sse("status", stage="llm", label="生成回答…"))
         queue.put_nowait(format_sse("flow_start", stage="llm", label="LLM 生成回答"))
@@ -335,7 +339,7 @@ class ChatService:
         flow_steps: list[dict] = []
 
         # 读最近 8 条历史消息做多轮对话上下文
-        history_items = self._container.conversation_service.get_messages(conv_id)
+        history_items = self._container.conversation_service.get_messages(user_id, conv_id)
 
         # 加载相关长期记忆，注入系统提示
         from app.rag.memory import load_long_term_memories
@@ -345,6 +349,7 @@ class ChatService:
             sqlite=self._container.sqlite,
             settings=settings,
             conversation_id=conv_id,
+            user_id=user_id,
         )
         system_text = PLAIN_LLM_SYSTEM_PROMPT
         if memory_context:
@@ -422,17 +427,17 @@ class ChatService:
 
         queue.put_nowait(format_sse("done", conversation_id=conv_id))
 
-    def _begin_turn(self, conv_id: str, user_msg: str, queue: asyncio.Queue) -> None:
+    def _begin_turn(self, conv_id: str, user_msg: str, queue: asyncio.Queue, user_id: str = "") -> None:
         """每轮对话开始前的公共步骤"""
         self._container.conversation_service.get_or_create(
-            conv_id,
+            user_id, conv_id,
             first_message=user_msg,
             model=self._container.settings.llm.model,
         )
-        conv = self._container.conversation_service.get(conv_id)
+        conv = self._container.conversation_service.get(user_id, conv_id)
         if conv and conv.message_count == 0 and user_msg:
             self._container.conversation_service.update(
-                conv_id, title=user_msg[:50].replace("\n", " ")
+                user_id, conv_id, title=user_msg[:50].replace("\n", " ")
             )
         try:
             self._container.conversation_service.add_user_message(conv_id, user_msg)
@@ -440,7 +445,7 @@ class ChatService:
             logger.exception("chat.persist.user_msg.error", conv_id=conv_id)
         queue.put_nowait(format_sse("session", conversation_id=conv_id))
 
-    def _extract_memories(self, user_msg: str, assistant_text: str, conv_id: str, llm=None) -> None:
+    def _extract_memories(self, user_msg: str, assistant_text: str, conv_id: str, llm=None, user_id: str = "") -> None:
         """从本轮对话中提取长期记忆"""
         from app.rag.memory import store_long_term_memories
 
@@ -455,6 +460,7 @@ class ChatService:
                 sqlite=self._container.sqlite,
                 settings=get_settings(),
                 conversation_id=conv_id,
+                user_id=user_id,
             )
             if created:
                 logger.info("long_term_memory.extracted", count=created)

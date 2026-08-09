@@ -60,6 +60,7 @@ def load_long_term_memory_node(state: State, long_term_memory_store, sqlite_stor
         sqlite=sqlite_store,
         settings=settings,
         conversation_id=conv_id,
+        user_id=state.get("user_id", ""),
     )
     return {"long_term_memory_context": ctx}
 

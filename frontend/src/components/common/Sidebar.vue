@@ -76,12 +76,20 @@ async function deleteConversation(id: string) {
 function formatTime(dateStr: string) {
   return formatDateTime(dateStr)
 }
+
+const currentUser = JSON.parse(localStorage.getItem('user') || '{}') as { username?: string }
+
+function logout() {
+  localStorage.clear()
+  router.push('/login')
+}
 </script>
 
 <template>
   <el-aside :width="collapsed ? '64px' : '260px'" class="sidebar">
-    <!-- 折叠按钮 -->
+    <!-- 用户信息 + 折叠按钮 -->
     <div class="toggle-bar" :class="{ collapsed }">
+      <span v-if="!collapsed && currentUser.username" class="toggle-user">账号：{{ currentUser.username }}</span>
       <el-button text size="default" @click="collapsed = !collapsed" class="toggle-btn">
         <el-icon :size="18"><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
       </el-button>
@@ -168,7 +176,8 @@ function formatTime(dateStr: string) {
 
     <!-- 底部（仅展开时） -->
     <div v-if="!collapsed" class="sidebar-foot">
-      Ollama · 本地模型
+      <span>Ollama · 本地模型</span>
+      <button class="logout-btn" @click="logout">退出</button>
     </div>
   </el-aside>
 </template>
@@ -186,12 +195,20 @@ function formatTime(dateStr: string) {
 /* 折叠按钮 */
 .toggle-bar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 10px 0;
 }
 .toggle-bar.collapsed {
   justify-content: center;
   padding: 8px 0 0;
+}
+.toggle-user {
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--grad-warm);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .toggle-btn {
   color: var(--el-text-color-secondary);
@@ -398,5 +415,11 @@ html.dark .nav-menu :deep(.el-menu-item.is-active) {
   padding: 8px 14px 12px;
   text-align: center; font-size: 10px;
   color: var(--el-text-color-secondary); letter-spacing: .5px;
+  display: flex; justify-content: space-between; align-items: center;
 }
+.logout-btn {
+  background: none; border: none; color: var(--el-text-color-secondary);
+  cursor: pointer; font-size: 10px; padding: 2px 4px;
+}
+.logout-btn:hover { color: var(--el-color-danger); }
 </style>

@@ -33,19 +33,26 @@ class DocumentService:
     ) -> tuple[list[Document], int]:
         return self._db.docs_list(kb_id=kb_id, q=q, page=page, page_size=page_size)
 
-    def _remove_files(self, doc_id: str):
-        for d in [self._upload_dir, self._md_dir, self._chunks_dir]:
+    def _remove_files(self, doc_id: str, kb_id: str | None = None):
+        dirs = [self._upload_dir, self._md_dir, self._chunks_dir]
+        if kb_id:
+            dirs = [d / kb_id for d in dirs]
+        for d in dirs:
             for f in d.glob(f"{doc_id}.*"):
                 f.unlink(missing_ok=True)
 
-    def delete(self, doc_id: str) -> bool:
+    def delete(self, user_id: str, doc_id: str) -> bool:
         doc = self._db.doc_by_id(doc_id)
         if not doc:
             return False
+        if doc.kb_id:
+            kb = self._db.kb_by_id(doc.kb_id)
+            if not kb or kb.user_id != user_id:
+                return False
 
         child_count = self._qdrant.delete_by_doc_id(doc_id)
         parent_count = self._parent.delete_by_doc_id(doc_id)
-        self._remove_files(doc_id)
+        self._remove_files(doc_id, kb_id=doc.kb_id)
 
         ok = self._db.doc_delete(doc_id)
         if not ok:
@@ -57,16 +64,21 @@ class DocumentService:
                      child_deleted=child_count, parent_deleted=parent_count)
         return True
 
-    def retry(self, doc_id: str) -> Optional[Document]:
+    def retry(self, user_id: str, doc_id: str) -> Optional[Document]:
         doc = self._db.doc_by_id(doc_id)
         if not doc or doc.status != DocumentStatus.ERROR.value:
             return None
+        if doc.kb_id:
+            kb = self._db.kb_by_id(doc.kb_id)
+            if not kb or kb.user_id != user_id:
+                return None
 
         from app.ingestion.chunker import DocumentChunker
         from app.core.config import get_settings
 
         settings = get_settings()
-        md_path = self._md_dir / f"{doc_id}.md"
+        kb_dir = self._md_dir / doc.kb_id if doc.kb_id else self._md_dir
+        md_path = kb_dir / f"{doc_id}.md"
         if not md_path.exists():
             self._db.doc_update(doc_id, error="Markdown 文件丢失，无法重试")
             return self._db.doc_by_id(doc_id)

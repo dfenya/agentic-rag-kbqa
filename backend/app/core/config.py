@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     upload: UploadSettings = Field(default_factory=UploadSettings)
+    dark_mode: bool = False
 
 
 _settings: Settings | None = None
@@ -157,11 +158,27 @@ def _merge_settings(settings: Settings, data: dict) -> None:
             settings.long_term_memory.enabled = bool(mem_data["enabled"])
         if "top_k" in mem_data:
             settings.long_term_memory.top_k = int(mem_data["top_k"])
+    if "dark_mode" in data:
+        settings.dark_mode = bool(data["dark_mode"])
 
 
-def save_user_settings(data: dict) -> None:
+def _user_settings_path(user_id: str) -> Path:
+    return _USER_SETTINGS_PATH.parent / f"settings_{user_id}.json"
+
+def _apply_user_settings_from_file(settings: object, user_id: str) -> None:
+    path = _user_settings_path(user_id)
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _merge_settings(settings, data)
+    except Exception:
+        pass
+
+def save_user_settings(data: dict, user_id: str = "") -> None:
     """把用户设置写入 JSON 文件，同时应用到当前进程"""
-    _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _USER_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = _user_settings_path(user_id) if user_id else _USER_SETTINGS_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     if _settings is not None:
         _merge_settings(_settings, data)

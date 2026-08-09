@@ -142,7 +142,8 @@ async function handleUpload(files: File[]) {
 // SSE 实时监听上传进度，直到全部完成
 function watchUploadSSE(uploadId: string): Promise<UploadTaskInfo[]> {
   return new Promise((resolve, reject) => {
-    const es = new EventSource(`/api/v1/uploads/${uploadId}/events`)
+    const token = localStorage.getItem('token') || ''
+    const es = new EventSource(`/api/v1/uploads/${uploadId}/events?token=${encodeURIComponent(token)}`)
     es.onmessage = (e) => {
       const data = JSON.parse(e.data)
       if (data.type === 'done') {

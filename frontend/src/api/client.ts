@@ -16,17 +16,54 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const isAuthRequest = err.config?.url?.startsWith('/auth/')
+    if (err.response?.status === 401 && !isAuthRequest) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      window.location.href = '/login'
+    }
+    return Promise.reject(err)
+  }
+)
+
 // ── 系统 ──
 export async function getHealth(): Promise<HealthResponse> {
   const { data } = await api.get('/health')
   return data
 }
 
+// ── 认证 ──
+export async function registerUser(username: string, password: string) {
+  const { data } = await api.post('/auth/register', { username, password })
+  return data as { access_token: string; user_id: string; username: string }
+}
+
+export async function loginUser(username: string, password: string) {
+  const { data } = await api.post('/auth/login', { username, password })
+  return data as { access_token: string; user_id: string; username: string }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('token')
+  return token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' }
+}
+
 // ── 对话 (SSE 流用 fetch 原生支持) ──
 export function chatSSE(req: ChatRequest, signal?: AbortSignal): Promise<Response> {
   return fetch('/api/v1/chat/stream', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
     signal,
   })
@@ -35,7 +72,7 @@ export function chatSSE(req: ChatRequest, signal?: AbortSignal): Promise<Respons
 export function resumeSSE(req: ChatResumeRequest, signal?: AbortSignal): Promise<Response> {
   return fetch('/api/v1/chat/resume', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
     signal,
   })
@@ -113,7 +150,8 @@ export async function getUploadStatus(uploadId: string) {
 }
 
 export function getUploadSSE(uploadId: string): EventSource {
-  return new EventSource(`/api/v1/uploads/${uploadId}/events`)
+  const token = localStorage.getItem('token') || ''
+  return new EventSource(`/api/v1/uploads/${uploadId}/events?token=${encodeURIComponent(token)}`)
 }
 
 // ── 长期记忆 ──

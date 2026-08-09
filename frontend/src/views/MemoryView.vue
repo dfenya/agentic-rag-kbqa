@@ -81,10 +81,10 @@ const typeColor: Record<string, string> = {
       <el-table-column label="内容" prop="content" show-overflow-tooltip />
       <el-table-column label="来源会话" width="160">
         <template #default="{ row }">
-          <template v-if="row.conversation_title">
-            <el-tooltip :content="row.source_conversation_id" placement="top" :show-after="400">
-              <span class="conv-link">{{ row.conversation_title }}</span>
-            </el-tooltip>
+          <template v-if="row.conversation_title && row.source_conversation_id">
+            <router-link :to="`/chat/${row.source_conversation_id}`" class="conv-link">
+              {{ row.conversation_title }}
+            </router-link>
           </template>
           <span v-else class="no-conv">-</span>
         </template>

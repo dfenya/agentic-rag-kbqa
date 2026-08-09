@@ -15,6 +15,7 @@ from app.domain.models import (
     LongTermMemory,
     Message,
     Setting,
+    User,
 )
 from app.domain.enums import DocumentStatus, LongTermMemoryType
 
@@ -45,6 +46,24 @@ class SqliteStore:
 
     def session(self) -> Session:
         return self.SessionLocal()
+
+    # ── 用户 ──
+
+    def user_create(self, **kwargs) -> User:
+        with self.session() as s:
+            u = User(**kwargs)
+            s.add(u)
+            s.commit()
+            s.refresh(u)
+            return u
+
+    def user_by_username(self, username: str) -> User | None:
+        with self.session() as s:
+            return s.query(User).filter_by(username=username).first()
+
+    def user_by_id(self, user_id: str) -> User | None:
+        with self.session() as s:
+            return s.query(User).filter_by(id=user_id).first()
 
     # ── 文档 ──
 
@@ -104,17 +123,17 @@ class SqliteStore:
 
     # ── 知识库 ──
 
-    def kb_create(self, name: str, description: str | None = None) -> KnowledgeBase:
+    def kb_create(self, name: str, user_id: str, description: str | None = None) -> KnowledgeBase:
         with self.session() as s:
-            kb = KnowledgeBase(name=name, description=description)
+            kb = KnowledgeBase(name=name, user_id=user_id, description=description)
             s.add(kb)
             s.commit()
             s.refresh(kb)
             return kb
 
-    def kb_list(self) -> list[KnowledgeBase]:
+    def kb_list(self, user_id: str) -> list[KnowledgeBase]:
         with self.session() as s:
-            return s.query(KnowledgeBase).order_by(KnowledgeBase.created_at.desc()).all()
+            return s.query(KnowledgeBase).filter_by(user_id=user_id).order_by(KnowledgeBase.created_at.desc()).all()
 
     def kb_by_id(self, kb_id: str) -> KnowledgeBase | None:
         with self.session() as s:
@@ -131,17 +150,17 @@ class SqliteStore:
 
     # ── 会话 ──
 
-    def conv_create(self, **kwargs) -> Conversation:
+    def conv_create(self, user_id: str, **kwargs) -> Conversation:
         with self.session() as s:
-            conv = Conversation(**kwargs)
+            conv = Conversation(user_id=user_id, **kwargs)
             s.add(conv)
             s.commit()
             s.refresh(conv)
             return conv
 
-    def conv_list(self, *, q: str | None = None) -> list[Conversation]:
+    def conv_list(self, user_id: str, *, q: str | None = None) -> list[Conversation]:
         with self.session() as s:
-            query = s.query(Conversation)
+            query = s.query(Conversation).filter_by(user_id=user_id)
             if q:
                 query = query.filter(Conversation.title.contains(q))
             return query.order_by(Conversation.updated_at.desc()).limit(50).all()
@@ -199,9 +218,9 @@ class SqliteStore:
 
     # ── 长期记忆 ──
 
-    def mem_insert(self, **kwargs) -> LongTermMemory:
+    def mem_insert(self, user_id: str, **kwargs) -> LongTermMemory:
         with self.session() as s:
-            mem = LongTermMemory(**kwargs)
+            mem = LongTermMemory(user_id=user_id, **kwargs)
             s.add(mem)
             s.commit()
             s.refresh(mem)
@@ -215,6 +234,10 @@ class SqliteStore:
                 synchronize_session=False,
             )
             s.commit()
+
+    def mem_by_id(self, mem_id: str) -> LongTermMemory | None:
+        with self.session() as s:
+            return s.query(LongTermMemory).filter_by(id=mem_id).first()
 
     def mem_update(self, mem_id: str, **kwargs) -> LongTermMemory | None:
         with self.session() as s:
@@ -236,20 +259,20 @@ class SqliteStore:
             return False
 
     def mem_list(
-        self, *, mem_type: str | None = None, q: str | None = None,
+        self, user_id: str, *, mem_type: str | None = None, q: str | None = None,
         limit: int = 100,
     ) -> list[LongTermMemory]:
         with self.session() as s:
-            query = s.query(LongTermMemory)
+            query = s.query(LongTermMemory).filter_by(user_id=user_id)
             if mem_type:
                 query = query.filter_by(type=mem_type)
             if q:
                 query = query.filter(LongTermMemory.content.contains(q))
             return query.order_by(LongTermMemory.updated_at.desc()).limit(limit).all()
 
-    def mem_all(self) -> list[LongTermMemory]:
+    def mem_all(self, user_id: str) -> list[LongTermMemory]:
         with self.session() as s:
-            return s.query(LongTermMemory).all()
+            return s.query(LongTermMemory).filter_by(user_id=user_id).all()
 
     def mem_list_by_ids(
         self,
@@ -263,16 +286,16 @@ class SqliteStore:
                 q = q.filter(LongTermMemory.source_conversation_id == conversation_id)
             return q.all()
 
-    def mem_count(self) -> int:
+    def mem_count(self, user_id: str) -> int:
         with self.session() as s:
-            return s.query(LongTermMemory).count()
+            return s.query(LongTermMemory).filter_by(user_id=user_id).count()
 
-    def mem_delete_least_accessed(self, keep: int) -> int:
+    def mem_delete_least_accessed(self, user_id: str, keep: int) -> int:
         """LRU 淘汰：保留访问最多的 keep 条，删掉其余的"""
         with self.session() as s:
-            to_keep = s.query(LongTermMemory).order_by(LongTermMemory.access_count.desc()).limit(keep).all()
+            to_keep = s.query(LongTermMemory).filter_by(user_id=user_id).order_by(LongTermMemory.access_count.desc()).limit(keep).all()
             keep_ids = {m.id for m in to_keep}
-            deleted = s.query(LongTermMemory).filter(~LongTermMemory.id.in_(keep_ids)).delete(
+            deleted = s.query(LongTermMemory).filter(LongTermMemory.user_id == user_id, ~LongTermMemory.id.in_(keep_ids)).delete(
                 synchronize_session=False
             )
             s.commit()
@@ -280,21 +303,21 @@ class SqliteStore:
 
     # ── 设置 ──
 
-    def setting_get(self, key: str) -> dict | None:
+    def setting_get(self, key: str, user_id: str) -> dict | None:
         with self.session() as s:
-            row = s.query(Setting).filter_by(key=key).first()
+            row = s.query(Setting).filter_by(key=key, user_id=user_id).first()
             return json.loads(row.value_json) if row else None
 
-    def setting_set(self, key: str, value: dict):
+    def setting_set(self, key: str, value: dict, user_id: str):
         with self.session() as s:
-            row = s.query(Setting).filter_by(key=key).first()
+            row = s.query(Setting).filter_by(key=key, user_id=user_id).first()
             if row:
                 row.value_json = json.dumps(value, ensure_ascii=False)
             else:
-                s.add(Setting(key=key, value_json=json.dumps(value, ensure_ascii=False)))
+                s.add(Setting(key=key, user_id=user_id, value_json=json.dumps(value, ensure_ascii=False)))
             s.commit()
 
-    def setting_all(self) -> dict:
+    def setting_all(self, user_id: str) -> dict:
         with self.session() as s:
-            rows = s.query(Setting).all()
+            rows = s.query(Setting).filter_by(user_id=user_id).all()
             return {r.key: json.loads(r.value_json) for r in rows}

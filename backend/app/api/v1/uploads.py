@@ -6,10 +6,10 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, Request, UploadFile, Depends
 from fastapi.responses import StreamingResponse
 
-from app.api.v1.deps import get_container
+from app.api.v1.deps import get_container, get_current_user
 from app.domain.schemas import UploadResponse, UploadTaskInfo
 from app.ingestion.pipeline import IngestionPipeline
 
@@ -36,6 +36,7 @@ async def upload_documents(
     files: list[UploadFile],
     request: Request,
     kb_id: str | None = None,
+    user_id: str = Depends(get_current_user),
 ):
     """上传文档到知识库"""
     container = get_container(request)
@@ -123,8 +124,7 @@ async def _process_uploads(upload_id: str, tasks: list[UploadTaskInfo], containe
 
 
 @router.get("/uploads/{upload_id}")
-async def get_upload_status(upload_id: str):
-    """轮询上传任务状态"""
+async def get_upload_status(upload_id: str, user_id: str = Depends(get_current_user)):
     _purge_stale_uploads()
     entry = _upload_tasks.get(upload_id)
     tasks = entry[0] if entry else []
@@ -132,8 +132,17 @@ async def get_upload_status(upload_id: str):
 
 
 @router.get("/uploads/{upload_id}/events")
-async def upload_events(upload_id: str):
-    """上传进度的 SSE 流"""
+async def upload_events(upload_id: str, token: str = ""):
+    # EventSource 不支持自定义 header，token 走 query 参数
+    if not token:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Missing token")
+    try:
+        from app.services.auth_service import decode_token
+        payload = decode_token(token)
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid token")
     import json
 
     async def event_gen():

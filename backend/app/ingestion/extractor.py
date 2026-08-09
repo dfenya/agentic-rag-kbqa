@@ -1,9 +1,6 @@
-"""PDF 转 Markdown，通过 HTTP 调用 mineru-api 服务
+"""PDF 转 Markdown，调 mineru-api HTTP 服务。配置见 config/mineru.yml。
 
-配置项在 config/mineru.yml，修改后重启生效。
-
-直接运行测试：
-  python -m app.ingestion.extractor input.pdf [output_dir]
+测试：python -m app.ingestion.extractor input.pdf [output_dir]
 """
 
 import sys

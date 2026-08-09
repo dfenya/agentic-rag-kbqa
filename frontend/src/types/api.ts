@@ -50,6 +50,7 @@ export interface SSEEvent {
   delta?: string
   content?: string
   items?: SourceItem[]
+  sources?: SourceItem[]
   code?: string
   message?: string
   task?: string

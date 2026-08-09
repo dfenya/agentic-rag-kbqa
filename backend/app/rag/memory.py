@@ -1,12 +1,4 @@
-"""长期记忆的加载和存储逻辑
-
-load_long_term_memories：每轮对话开始时调用，把相关的长期记忆注入 state.long_term_memory_context
-store_long_term_memories：每轮对话结束时调用，从对话中提取新的记忆并写入
-
-注意：这里只处理「长期记忆」（跨对话持久化的用户偏好/FAQ/历史摘要，存 Qdrant+SQLite）。
-「短期/工作记忆」即当前对话上下文（messages 序列），由 LangGraph SqliteSaver 持久化，
-不在本模块处理。
-"""
+"""长期记忆：每轮对话开始时加载，结束时提取并存储。"""
 
 import json
 from datetime import datetime, timezone, timedelta
@@ -49,6 +41,7 @@ def load_long_term_memories(
     sqlite: SqliteStore,
     settings: Settings,
     conversation_id: str = "",
+    user_id: str = "",
 ) -> str:
     """根据用户当前提问搜索相关的长期记忆，返回一段上下文文本
 
@@ -116,6 +109,7 @@ def store_long_term_memories(
     sqlite: SqliteStore,
     settings: Settings,
     conversation_id: str = "",
+    user_id: str = "",
 ) -> int:
     """从一轮对话中提取记忆候选，去重后写入。
 
@@ -142,7 +136,7 @@ def store_long_term_memories(
         )
 
         # 预加载全量记忆，避免循环内重复查询
-        all_mems = sqlite.mem_all()
+        all_mems = sqlite.mem_all(user_id)
 
         created = 0
         for item in result.items:
@@ -210,7 +204,7 @@ def store_long_term_memories(
 
             # ── 全新记忆：直接插入 ──
             init_importance = _TYPE_INITIAL_IMPORTANCE.get(item_type, 0.5)
-            mem = sqlite.mem_insert(
+            mem = sqlite.mem_insert(user_id,
                 type=item_type,
                 content=item.content,
                 keywords_json=json.dumps(item.keywords, ensure_ascii=False),
@@ -226,9 +220,9 @@ def store_long_term_memories(
             created += 1
 
         # LRU 淘汰：超过最大条数就删掉访问最少的
-        total = sqlite.mem_count()
+        total = sqlite.mem_count(user_id)
         if total > settings.long_term_memory.max_records:
-            deleted = sqlite.mem_delete_least_accessed(settings.long_term_memory.max_records)
+            deleted = sqlite.mem_delete_least_accessed(user_id, settings.long_term_memory.max_records)
             logger.info("long_term_memory.evicted", deleted=deleted)
 
         return created

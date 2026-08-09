@@ -11,16 +11,11 @@ import { BRAND } from '@/config/brand'
 const props = defineProps<{ message: ChatMessage; isFirstAssistant?: boolean }>()
 const store = useChatStore()
 
-// 判断该消息是否有 RAG 流程数据（包含非 llm 节点才是 RAG 模式）
-// 数据源优先级：消息自身的 flowSteps（历史回显） > 全局 ragFlowSteps（流式生成中）
 const flowStepsToShow = computed<RagFlowStep[] | null>(() => {
-  // 1. 历史回显：消息自身已绑定 flowSteps（流结束后绑定或从后端加载）
-  if (props.message.flowSteps && props.message.flowSteps.length > 0) {
-    // 纯 LLM 模式只有 llm 节点，不算 RAG 流程，不显示
+  if (props.message.flowSteps?.length) {
     const hasNonLLM = props.message.flowSteps.some(s => s.stage !== 'llm')
     return hasNonLLM ? props.message.flowSteps : null
   }
-  // 2. 流式生成中：使用全局 store 数据（仅在第一条助手消息时显示）
   if (props.isFirstAssistant && store.ragFlowSteps.length > 0 && store.isFlowForCurrentConv) {
     const hasNonLLM = store.ragFlowSteps.some(s => s.stage !== 'llm')
     return hasNonLLM ? store.ragFlowSteps : null
@@ -53,21 +48,6 @@ const flowStepsToShow = computed<RagFlowStep[] | null>(() => {
       </div>
     </div>
 
-    <!-- 工具调用 -->
-    <div v-else-if="message.role === 'tool'" class="msg-row msg-row--tool">
-      <el-collapse>
-        <el-collapse-item :name="message.id">
-          <template #title>
-            <div class="tool-header">
-              <span class="tool-dot" :class="{ 'tool-dot--done': !!message.content }" />
-              <span class="tool-name">{{ message.toolName || '工具调用' }}</span>
-            </div>
-          </template>
-          <div v-if="message.content" class="tool-result">{{ message.content }}</div>
-          <div v-else class="tool-result tool-result--pending">执行中…</div>
-        </el-collapse-item>
-      </el-collapse>
-    </div>
 
     <!-- 助手 -->
     <div v-else class="msg-row msg-row--assistant">
@@ -78,7 +58,7 @@ const flowStepsToShow = computed<RagFlowStep[] | null>(() => {
           <span v-if="message.isStreaming" class="cursor">▍</span>
         </div>
         <SourceChips
-          v-if="message.sources?.length && !message.isStreaming"
+          v-if="message.sources?.length"
           :sources="message.sources"
         />
       </div>
@@ -110,10 +90,6 @@ const flowStepsToShow = computed<RagFlowStep[] | null>(() => {
 
 .msg-row--system {
   justify-content: center;
-}
-
-.msg-row--tool {
-  padding: 2px 0;
 }
 
 .msg-row--assistant {
@@ -215,53 +191,6 @@ const flowStepsToShow = computed<RagFlowStep[] | null>(() => {
 .assistant-body {
   min-width: 0;
   flex: 1;
-}
-
-/* ── 工具 ── */
-.tool-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.tool-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #f59e0b;
-  animation: tool-pulse 1.5s infinite;
-  flex-shrink: 0;
-}
-.tool-dot--done {
-  background: #18a058;
-  animation: none;
-}
-
-@keyframes tool-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .3; }
-}
-
-.tool-name {
-  color: var(--el-text-color-regular);
-  font-weight: 500;
-}
-
-.tool-result {
-  font-size: 12px;
-  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
-  white-space: pre-wrap;
-  max-height: 240px;
-  overflow-y: auto;
-  color: var(--el-text-color-secondary);
-  padding: 8px 0 4px;
-  line-height: 1.5;
-}
-
-.tool-result--pending {
-  color: var(--el-text-color-secondary);
-  font-style: italic;
 }
 
 /* ── 光标 ── */

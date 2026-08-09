@@ -30,6 +30,9 @@ class State(MessagesState):
     long_term_memory_context: str = ""
     conversation_id: str = ""
 
+    # 用户 ID，多租户隔离
+    user_id: str = ""
+
     # 澄清计数器，防无限循环
     clarification_count: int = 0
 

@@ -11,6 +11,7 @@ from app.stores.sqlite_store import SqliteStore
 from app.stores.qdrant_store import QdrantStore
 from app.stores.parent_store import ParentStore
 from app.stores.long_term_memory_store import LongTermMemoryStore
+from app.services.auth_service import AuthService
 from app.services.conversation_service import ConversationService
 from app.services.document_service import DocumentService
 from app.services.long_term_memory_service import LongTermMemoryService
@@ -29,6 +30,7 @@ class Container:
         self.parent: ParentStore | None = None
         self.long_term_memory_store: LongTermMemoryStore | None = None
 
+        self.auth_service: AuthService | None = None
         self.conversation_service: ConversationService | None = None
         self.document_service: DocumentService | None = None
         self.long_term_memory_service: LongTermMemoryService | None = None
@@ -73,6 +75,7 @@ class Container:
 
         logger.info("container.stores.ready")
 
+        self.auth_service = AuthService(self.sqlite)
         self.conversation_service = ConversationService(self.sqlite)
         self.document_service = DocumentService(self.sqlite, self.qdrant, self.parent, self.settings)
         self.long_term_memory_service = LongTermMemoryService(self.sqlite, self.long_term_memory_store)

@@ -339,6 +339,12 @@ export const useChatStore = defineStore('chat', () => {
         break
 
       case 'sources':
+        if (event.sources?.length) {
+          const msg = _streamingMsgId
+            ? messages.value.find(m => m.id === _streamingMsgId)
+            : getLastAssistant()
+          if (msg) msg.sources = event.sources
+        }
         break
 
       case 'done':

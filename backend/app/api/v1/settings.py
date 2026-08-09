@@ -1,16 +1,14 @@
-"""设置和模型列表"""
-
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 
 from app.core.config import get_settings, save_user_settings
+from app.api.v1.deps import get_current_user
 
 router = APIRouter(tags=["settings"])
 
 
 @router.get("/settings")
-async def get_settings_api(request: Request):
-    """返回当前运行时设置"""
+async def get_settings_api(user_id: str = Depends(get_current_user)):
     settings = get_settings()
     return {
         "llm": {
@@ -27,30 +25,25 @@ async def get_settings_api(request: Request):
             "enabled": settings.long_term_memory.enabled,
             "top_k": settings.long_term_memory.top_k,
         },
+        "dark_mode": getattr(settings, 'dark_mode', False),
     }
 
 
 @router.put("/settings")
-async def update_settings(body: dict):
-    """保存用户设置到 JSON，重启后依然生效"""
-    save_user_settings(body)
+async def update_settings(body: dict, user_id: str = Depends(get_current_user)):
+    save_user_settings(body, user_id)
     return {"ok": True}
 
 
 @router.get("/models")
-async def list_models():
-    """代理 Ollama 的 /api/tags"""
+async def list_models(user_id: str = Depends(get_current_user)):
     settings = get_settings()
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{settings.llm.ollama_base_url}/api/tags")
             data = resp.json()
             return [
-                {
-                    "name": m.get("name", ""),
-                    "size": m.get("size", 0),
-                    "modified_at": m.get("modified_at", ""),
-                }
+                {"name": m.get("name", ""), "size": m.get("size", 0), "modified_at": m.get("modified_at", "")}
                 for m in data.get("models", [])
             ]
     except Exception:
@@ -58,6 +51,6 @@ async def list_models():
 
 
 @router.get("/models/current")
-async def current_model():
+async def current_model(user_id: str = Depends(get_current_user)):
     settings = get_settings()
     return {"model": settings.llm.model}

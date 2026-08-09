@@ -1,23 +1,22 @@
 """长期记忆管理"""
 
 import json
-from fastapi import APIRouter, Request, HTTPException
-
-from app.api.v1.deps import get_container
+from fastapi import APIRouter, Request, HTTPException, Depends
+from app.api.v1.deps import get_container, get_current_user
 from app.domain.schemas import LongTermMemoryResponse, LongTermMemoryUpdateRequest
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
 
 @router.get("")
-async def list_memories(type: str | None = None, q: str | None = None, request: Request = None):
+async def list_memories(type: str | None = None, q: str | None = None, request: Request = None, user_id: str = Depends(get_current_user)):
     container = get_container(request)
-    mems = container.long_term_memory_service.list_memories(mem_type=type, q=q)
+    mems = container.long_term_memory_service.list_memories(user_id, mem_type=type, q=q)
     # 查所有涉及到的会话标题
     conv_ids = {m.source_conversation_id for m in mems if m.source_conversation_id}
     conv_titles = {}
     for cid in conv_ids:
-        conv = container.conversation_service.get(cid)
+        conv = container.conversation_service.get(user_id, cid)
         if conv:
             conv_titles[cid] = conv.title or cid[:8]
     return [
@@ -33,10 +32,10 @@ async def list_memories(type: str | None = None, q: str | None = None, request: 
 
 
 @router.patch("/{mem_id}")
-async def update_memory(mem_id: str, body: LongTermMemoryUpdateRequest, request: Request):
+async def update_memory(mem_id: str, body: LongTermMemoryUpdateRequest, request: Request, user_id: str = Depends(get_current_user)):
     container = get_container(request)
     mem = container.long_term_memory_service.update(
-        mem_id, **(body.model_dump(exclude_none=True)),
+        user_id, mem_id, **(body.model_dump(exclude_none=True)),
     )
     if not mem:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -49,8 +48,8 @@ async def update_memory(mem_id: str, body: LongTermMemoryUpdateRequest, request:
 
 
 @router.delete("/{mem_id}", status_code=204)
-async def delete_memory(mem_id: str, request: Request):
+async def delete_memory(mem_id: str, request: Request, user_id: str = Depends(get_current_user)):
     container = get_container(request)
-    ok = container.long_term_memory_service.delete(mem_id)
+    ok = container.long_term_memory_service.delete(user_id, mem_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Memory not found")

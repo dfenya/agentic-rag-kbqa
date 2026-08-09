@@ -2,38 +2,18 @@
 import { ElMessage } from 'element-plus'
 import { getSettings, updateSettings, getModels } from '@/api/client'
 
-// 深色模式：切换时实时预览，保存时才持久化，离开未保存则恢复
-const isDark = inject<Ref<boolean>>('isDark', ref(false))
-const darkMode = ref(isDark.value)
+const darkMode = ref(false)
 const loading = ref(false)
 const models = ref<{ name: string; size: number }[]>([])
 
-// 实时预览：切换开关时立即改变 html.dark class（不触发 useDark 持久化）
+// 实时预览
 watch(darkMode, (val) => {
   document.documentElement.classList.toggle('dark', val)
 })
 
-// 离开页面未保存时，恢复到已持久化的真实状态
-onUnmounted(() => {
-  document.documentElement.classList.toggle('dark', isDark.value)
-  darkMode.value = isDark.value
-})
-
-const llm = reactive({
-  ollama_base_url: 'http://localhost:11434',
-  model: '',
-  temperature: 0,
-})
-
-const rag = reactive({
-  top_k: 5,
-  score_threshold: 0.7,
-})
-
-const memory = reactive({
-  enabled: true,
-  top_k: 5,
-})
+const llm = reactive({ ollama_base_url: 'http://localhost:11434', model: '', temperature: 0 })
+const rag = reactive({ top_k: 5, score_threshold: 0.7 })
+const memory = reactive({ enabled: true, top_k: 5 })
 
 onMounted(async () => {
   loading.value = true
@@ -42,9 +22,10 @@ onMounted(async () => {
     if (s.llm) Object.assign(llm, s.llm)
     if (s.rag) Object.assign(rag, s.rag)
     if (s.memory) Object.assign(memory, s.memory)
+    darkMode.value = s.dark_mode ?? false
     models.value = await getModels()
-  } catch (e) {
-    console.error('Failed to load settings:', e)
+  } catch {
+    console.error('Failed to load settings')
   } finally {
     loading.value = false
   }
@@ -53,14 +34,13 @@ onMounted(async () => {
 async function handleSave() {
   loading.value = true
   try {
-    // 保存时同步给 useDark，触发持久化（localStorage）
-    isDark.value = darkMode.value
     await updateSettings({
       llm: { ...llm },
       rag: { ...rag },
       memory: { ...memory },
+      dark_mode: darkMode.value,
     })
-    ElMessage.success('设置已保存 · 下次对话即刻生效')
+    ElMessage.success('设置已保存')
   } catch {
     ElMessage.error('保存失败')
   } finally {

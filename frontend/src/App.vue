@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { useDark, useToggle } from '@vueuse/core'
+import { getSettings } from '@/api/client'
 
-const isDark = useDark()
-const toggleDark = useToggle(isDark)
-
-// 暴露给设置页使用
-provide('isDark', isDark)
-provide('toggleDark', toggleDark)
+const token = localStorage.getItem('token')
+if (token) {
+  getSettings().then(s => {
+    if (s.dark_mode) {
+      document.documentElement.classList.add('dark')
+    }
+  }).catch(() => {})
+}
 </script>
 
 <template>
