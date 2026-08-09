@@ -19,6 +19,7 @@ dist/
 backend/data/
 backend/qdrant_db/
 backend/output/
+output/
 qdrant_db/
 
 # Frontend

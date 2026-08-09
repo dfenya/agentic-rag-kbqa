@@ -37,14 +37,6 @@ sqlalchemy==2.0.42
 langfuse==4.0.0
 structlog==25.3.0
 
-# ── Document Processing ──
-# MinerU: PDF → Markdown with dual-column & table support
-# Install separately before pip install -r requirements.txt:
-#   pip install uv -i https://mirrors.aliyun.com/pypi/simple
-#   uv pip install -U "mineru[all]" -i https://mirrors.aliyun.com/pypi/simple
-# mineru[all]  # ← uncomment after installing from mirrors.aliyun.com
-PyMuPDF==1.26.6
-
 # ── Utilities ──
 python-dotenv==1.2.2
 pyyaml==6.0.3
