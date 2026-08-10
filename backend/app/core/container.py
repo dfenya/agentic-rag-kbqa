@@ -71,7 +71,7 @@ class Container:
         self.qdrant.init()
         self.qdrant.create_collection()
 
-        self.parent = ParentStore(self.qdrant.client)
+        self.parent = ParentStore(self.sqlite)
 
         self.long_term_memory_store = LongTermMemoryStore(self.settings)
         self.long_term_memory_store.init(self.qdrant.client, self.qdrant._dense)

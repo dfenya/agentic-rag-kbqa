@@ -44,9 +44,14 @@ class IngestionPipeline:
         self._chunks_dir = Path(settings.storage.chunks_dir)
 
     def _dirs(self, kb_id: str | None):
-        upload = self._upload_dir / kb_id if kb_id else self._upload_dir
-        md = self._md_dir / kb_id if kb_id else self._md_dir
-        chunks = self._chunks_dir / kb_id if kb_id else self._chunks_dir
+        if kb_id:
+            kb = self._sqlite.kb_by_id(kb_id)
+            folder = f"{kb.name}_{kb_id}" if kb else kb_id
+        else:
+            folder = None
+        upload = self._upload_dir / folder if folder else self._upload_dir
+        md = self._md_dir / folder if folder else self._md_dir
+        chunks = self._chunks_dir / folder if folder else self._chunks_dir
         for d in [upload, md, chunks]:
             d.mkdir(parents=True, exist_ok=True)
         return upload, md, chunks

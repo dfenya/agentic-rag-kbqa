@@ -126,6 +126,16 @@ class LongTermMemory(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class ParentChunk(Base):
+    __tablename__ = "parent_chunks"
+
+    parent_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    doc_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source: Mapped[str] = mapped_column(String(512), default="")
+    kb_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
 class Setting(Base):
     __tablename__ = "settings"
 

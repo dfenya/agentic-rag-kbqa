@@ -76,7 +76,8 @@ const pipelineSteps = [
 const stepKeyIndex: Record<string, number> = { dedup: 0, extract: 1, chunk: 2, store: 3 }
 
 function getStepStatus(stepIdx: number, phase: string | null, status: string): '' | 'success' | 'process' | 'error' | 'wait' {
-  if (status === 'ready' || status === 'duplicate') return 'success'
+  if (status === 'ready') return 'success'
+  if (status === 'duplicate') return stepIdx === 0 ? 'success' : 'wait'
   if (status === 'error') {
     // 找到 failure 发生在哪一步
     const current = phase ? (stepKeyIndex[phase] ?? 0) : 0
@@ -123,14 +124,19 @@ async function handleUpload(files: File[]) {
     const uploadId = await store.uploadFiles(files, selectedKbId.value || undefined)
     const tasks = await watchUploadSSE(uploadId)
     await refresh()
-    const success = tasks.filter(t => t.status === 'ready' || t.status === 'duplicate')
+    const ready = tasks.filter(t => t.status === 'ready')
+    const dup = tasks.filter(t => t.status === 'duplicate')
     const failed = tasks.filter(t => t.status === 'error')
-    if (failed.length === 0) {
-      ElMessage.success(`上传完成 · 成功 ${success.length} 个文件`)
-    } else if (success.length === 0) {
+    if (failed.length === 0 && dup.length === 0) {
+      ElMessage.success(`上传完成 · ${ready.length} 个文件`)
+    } else if (failed.length === 0 && ready.length === 0) {
+      ElMessage.warning(`文件已存在，跳过 ${dup.length} 个文件`)
+    } else if (failed.length === 0) {
+      ElMessage.success(`上传完成 · 新增 ${ready.length} 个，跳过 ${dup.length} 个重复文件`)
+    } else if (ready.length === 0 && dup.length === 0) {
       ElMessage.error(`上传失败 · ${failed.length} 个文件处理失败`)
     } else {
-      ElMessage.warning(`部分成功 · 成功 ${success.length} 个，失败 ${failed.length} 个`)
+      ElMessage.warning(`部分成功 · 新增 ${ready.length} 个，跳过 ${dup.length} 个，失败 ${failed.length} 个`)
     }
   } catch (e: any) {
     ElMessage.error(e?.message || '上传失败')

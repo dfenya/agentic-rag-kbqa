@@ -40,9 +40,13 @@ class DocumentService:
         return self._db.docs_list_by_user(user_id, q=q, page=page, page_size=page_size)
 
     def _remove_files(self, doc_id: str, kb_id: str | None = None):
-        dirs = [self._upload_dir, self._md_dir, self._chunks_dir]
+        folder = None
         if kb_id:
-            dirs = [d / kb_id for d in dirs]
+            kb = self._db.kb_by_id(kb_id)
+            folder = f"{kb.name}_{kb_id}" if kb else kb_id
+        dirs = [self._upload_dir, self._md_dir, self._chunks_dir]
+        if folder:
+            dirs = [d / folder for d in dirs]
         for d in dirs:
             for f in d.glob(f"{doc_id}.*"):
                 f.unlink(missing_ok=True)
@@ -83,8 +87,11 @@ class DocumentService:
         from app.core.config import get_settings
 
         settings = get_settings()
-        kb_dir = self._md_dir / doc.kb_id if doc.kb_id else self._md_dir
-        md_path = kb_dir / f"{doc_id}.md"
+        folder = doc.kb_id
+        if doc.kb_id:
+            kb = self._db.kb_by_id(doc.kb_id)
+            folder = f"{kb.name}_{doc.kb_id}" if kb else doc.kb_id
+        md_path = (self._md_dir / folder if folder else self._md_dir) / f"{doc_id}.md"
         if not md_path.exists():
             self._db.doc_update(doc_id, error="Markdown 文件丢失，无法重试")
             return self._db.doc_by_id(doc_id)

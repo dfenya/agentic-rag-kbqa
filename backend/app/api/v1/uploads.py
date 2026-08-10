@@ -64,6 +64,17 @@ async def upload_documents(
             ))
             continue
 
+        # 上传时先做 SHA256 去重，重复文件直接返回终态
+        import hashlib
+        sha = hashlib.sha256(content).hexdigest()
+        existing = container.sqlite.doc_by_sha256(sha, kb_id=kb_id)
+        if existing:
+            tasks.append(UploadTaskInfo(
+                filename=f.filename, status="duplicate",
+                duplicate_of=existing.id, phase="dedup", percent=1.0,
+            ))
+            continue
+
         tmp = Path(tempfile.gettempdir()) / f"kb_upload_{uuid.uuid4().hex[:8]}_{f.filename}"
         tmp.write_bytes(content)
 

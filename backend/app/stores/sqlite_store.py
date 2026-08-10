@@ -14,6 +14,7 @@ from app.domain.models import (
     KnowledgeBase,
     LongTermMemory,
     Message,
+    ParentChunk,
     Setting,
     User,
 )
@@ -335,6 +336,40 @@ class SqliteStore:
             else:
                 s.add(Setting(key=key, user_id=user_id, value_json=json.dumps(value, ensure_ascii=False)))
             s.commit()
+
+    # ── 父块 ──
+
+    def parent_save_many(self, parents: list[tuple]) -> None:
+        with self.session() as s:
+            for parent_id, doc in parents:
+                pc = ParentChunk(
+                    parent_id=parent_id,
+                    content=doc.page_content,
+                    doc_id=doc.metadata.get("doc_id", ""),
+                    source=doc.metadata.get("source", ""),
+                    kb_id=doc.metadata.get("kb_id"),
+                )
+                s.merge(pc)
+            s.commit()
+
+    def parent_load_many(self, parent_ids: list[str]) -> list[dict]:
+        with self.session() as s:
+            chunks = s.query(ParentChunk).filter(ParentChunk.parent_id.in_(parent_ids)).all()
+            by_id = {c.parent_id: c for c in chunks}
+            return [
+                {"content": by_id[pid].content, "parent_id": pid,
+                 "metadata": {"source": by_id[pid].source, "doc_id": by_id[pid].doc_id}}
+                for pid in parent_ids if pid in by_id
+            ]
+
+    def parent_delete_by_doc_id(self, doc_id: str) -> int:
+        with self.session() as s:
+            count = s.query(ParentChunk).filter_by(doc_id=doc_id).count()
+            s.query(ParentChunk).filter_by(doc_id=doc_id).delete()
+            s.commit()
+            return count
+
+    # ── 设置 ──
 
     def setting_all(self, user_id: str) -> dict:
         with self.session() as s:
