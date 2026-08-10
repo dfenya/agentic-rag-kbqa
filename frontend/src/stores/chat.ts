@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { ref, reactive, computed } from 'vue'
 import type { SSEEvent, SourceItem, RagFlowStep, RagFlowTool, MessageItem } from '@/types/api'
 import * as api from '@/api/client'
 import { generateId } from '@/utils/id'
@@ -40,19 +41,19 @@ const STAGE_ORDER: Record<string, number> = {
 }
 
 export const useChatStore = defineStore('chat', () => {
-  const messages = ref<ChatMessage[]>([])
+  const messages = reactive<ChatMessage[]>([])
   const isStreaming = ref(false)
   const currentStage = ref('')
   const conversationId = ref<string | null>(null)
   const kbId = ref<string | null>(null)
-  const ragFlowSteps = ref<RagFlowStep[]>([])
+  const ragFlowSteps = reactive<RagFlowStep[]>([])
   // 标记 ragFlowSteps 所属的会话 ID，防止跨会话污染
   const _flowConvId = ref<string | null>(null)
   // 轮询定时器（用于切回仍在后台处理的会话时轮询加载）
   let _pollingTimer: number | null = null
 
   function resetFlow() {
-    ragFlowSteps.value = []
+    ragFlowSteps.splice(0, ragFlowSteps.length)
     _flowConvId.value = null
   }
 
@@ -74,7 +75,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 彻底清空所有会话相关状态（点"新对话"时使用）
   function resetAllState() {
-    messages.value = []
+    messages.splice(0, messages.length)
     isStreaming.value = false
     currentStage.value = ''
     conversationId.value = null
@@ -99,47 +100,39 @@ export const useChatStore = defineStore('chat', () => {
 
   function _upsertStep(stage: string, label: string, task?: string | null) {
     const key = task ? `${stage}:${task}` : stage
-    const existing = ragFlowSteps.value.find(s => (s.task ? `${s.stage}:${s.task}` : s.stage) === key)
+    const existing = ragFlowSteps.find(s => (s.task ? `${s.stage}:${s.task}` : s.stage) === key)
     if (existing) {
       existing.status = 'running'
       return existing
     }
-    const step: RagFlowStep = {
-      stage,
-      label,
-      status: 'running',
-      task: task || undefined,
-      tools: [],
-      children: [],
-    }
-    ragFlowSteps.value.push(step)
-    // 按 stage 权重排序
-    ragFlowSteps.value.sort((a, b) => (STAGE_ORDER[a.stage] || 99) - (STAGE_ORDER[b.stage] || 99))
+    const step: RagFlowStep = { stage, label, status: 'running', task: task || undefined, tools: [], children: [] }
+    ragFlowSteps.push(step)
+    ragFlowSteps.sort((a, b) => (STAGE_ORDER[a.stage] || 99) - (STAGE_ORDER[b.stage] || 99))
     return step
   }
 
   function _findStep(stage: string, task?: string | null): RagFlowStep | undefined {
     const key = task ? `${stage}:${task}` : stage
-    return ragFlowSteps.value.find(s => (s.task ? `${s.stage}:${s.task}` : s.stage) === key)
+    return ragFlowSteps.find(s => (s.task ? `${s.stage}:${s.task}` : s.stage) === key)
+  }
+
+  function _ensureAgentStep(task?: string | null): RagFlowStep {
+    const existing = _findStep('agent', task) || _findStep('agent')
+    if (existing) return existing
+    const step: RagFlowStep = { stage: 'agent', label: '检索知识库', status: 'running', task: task || undefined, tools: [], children: [] }
+    ragFlowSteps.push(step)
+    ragFlowSteps.sort((a, b) => (STAGE_ORDER[a.stage] || 99) - (STAGE_ORDER[b.stage] || 99))
+    return step
   }
 
   function addFlowTool(name: string, args: unknown, task?: string | null) {
-    // agent 的 tool 挂到 agent step 或其 task 子 step
-    const agentStep = _findStep('agent', task)
-    const target = agentStep || _findStep('agent')
-    if (!target) return
-    target.tools.push({
-      name,
-      label: TOOL_LABELS[name] || name,
-      status: 'running',
-      args,
-    })
+    const target = _ensureAgentStep(task)
+    target.tools.push({ name, label: TOOL_LABELS[name] || name, status: 'running' as const, args })
   }
 
   function addFlowToolResult(name: string, content: string, task?: string | null, count?: number) {
-    const agentStep = _findStep('agent', task) || _findStep('agent')
-    if (!agentStep) return
-    const tool = [...agentStep.tools].reverse().find(t => t.name === name && t.status === 'running')
+    const target = _ensureAgentStep(task)
+    const tool = [...target.tools].reverse().find(t => t.name === name && t.status === 'running')
     if (tool) {
       tool.status = 'done'
       tool.result = content
@@ -148,33 +141,29 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function addMessage(msg: ChatMessage) {
-    messages.value.push(msg)
+    messages.push(msg)
   }
 
   function getLastAssistant(): ChatMessage | undefined {
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'assistant') return messages.value[i]
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i]
     }
     return undefined
   }
 
   function appendToAssistant(content: string) {
-    const msg = _streamingMsgId
-      ? messages.value.find(m => m.id === _streamingMsgId)
-      : getLastAssistant()
+    const msg = _streamingMsgId ? messages.find(m => m.id === _streamingMsgId) : getLastAssistant()
     if (msg) msg.content += content
   }
 
   function finishStreaming() {
-    const msg = _streamingMsgId
-      ? messages.value.find(m => m.id === _streamingMsgId)
-      : getLastAssistant()
+    const msg = _streamingMsgId ? messages.find(m => m.id === _streamingMsgId) : getLastAssistant()
     if (msg) msg.isStreaming = false
     _streamingMsgId = null
   }
 
   function clearMessages() {
-    messages.value = []
+    messages.splice(0, messages.length)
     currentStage.value = ''
     conversationId.value = null
     kbId.value = null
@@ -228,10 +217,11 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
-    messages.value = await doLoad()
+    const loaded = await doLoad()
+    messages.splice(0, messages.length, ...loaded)
 
     // 切回仍在后台处理的会话：开启轮询直到 assistant 消息出现
-    if (_isProcessing(messages.value)) {
+    if (_isProcessing(messages)) {
       isStreaming.value = true
       currentStage.value = '后台处理中…'
       let attempt = 0
@@ -244,7 +234,7 @@ export const useChatStore = defineStore('chat', () => {
           _stopPolling()
           return
         }
-        messages.value = latest
+        messages.splice(0, messages.length, ...latest)
         if (!_isProcessing(latest) || attempt >= MAX_ATTEMPTS) {
           _stopPolling()
           isStreaming.value = false
@@ -274,7 +264,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         break
 
-      case 'flow_end':
+      case 'flow_end': {
         if (event.stage) {
           const step = _findStep(event.stage, event.task)
           if (step) {
@@ -283,9 +273,9 @@ export const useChatStore = defineStore('chat', () => {
           }
         }
         break
+      }
 
       case 'query_analysis': {
-        // 意图分析/改写结果：把改写后的子查询挂到 rewrite_query 步骤
         const step = _findStep('rewrite_query')
         if (step && event.questions?.length) {
           step.queries = event.questions
@@ -300,7 +290,7 @@ export const useChatStore = defineStore('chat', () => {
           content: event.question || '',
           metadata: { node: 'clarification' },
         }
-        messages.value.push(msg)
+        messages.push(msg)
         isStreaming.value = false
         _streamingMsgId = null
         break
@@ -308,11 +298,11 @@ export const useChatStore = defineStore('chat', () => {
 
       case 'tool': {
         // 保留旧的消息卡片（兼容），同时更新 flow
-        const hasPending = messages.value.some(
+        const hasPending = messages.some(
           m => m.role === 'tool' && m.toolName === event.name && !m.content
         )
         if (!hasPending) {
-          messages.value.push({
+          messages.push({
             id: generateId(),
             role: 'tool',
             content: '',
@@ -324,7 +314,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       case 'tool_result': {
-        const tool = [...messages.value].reverse().find(
+        const tool = [...messages].reverse().find(
           m => m.role === 'tool' && m.toolName === event.name && !m.content
         )
         if (tool) {
@@ -341,31 +331,27 @@ export const useChatStore = defineStore('chat', () => {
       case 'sources':
         if (event.sources?.length) {
           const msg = _streamingMsgId
-            ? messages.value.find(m => m.id === _streamingMsgId)
+            ? messages.find(m => m.id === _streamingMsgId)
             : getLastAssistant()
           if (msg) msg.sources = event.sources
         }
         break
 
-      case 'done':
-        // 把全局 ragFlowSteps 绑定到最后一条 assistant 消息，供历史回显使用
-        if (ragFlowSteps.value.length > 0) {
-          const lastAssistant = getLastAssistant()
-          if (lastAssistant && !lastAssistant.flowSteps) {
-            lastAssistant.flowSteps = [...ragFlowSteps.value]
+      case 'done': {
+        if (ragFlowSteps.length > 0) {
+          const last = getLastAssistant()
+          if (last && !last.flowSteps) {
+            last.flowSteps = [...ragFlowSteps]
           }
         }
         finishStreaming()
         isStreaming.value = false
         currentStage.value = ''
         break
+      }
 
       case 'error':
-        messages.value.push({
-          id: generateId(),
-          role: 'system',
-          content: `❌ ${event.message || '发生错误'}`,
-        })
+        messages.push({ id: generateId(), role: 'system' as const, content: `❌ ${event.message || '发生错误'}` })
         finishStreaming()
         isStreaming.value = false
         break

@@ -90,10 +90,12 @@ class ChatService:
                         graph.update_state(config, {"messages": [HumanMessage(content=message.strip())]})
                         stream_input = None
                     else:
+                        kb = self._container.sqlite.kb_by_id(kb_id) if kb_id else None
                         stream_input = {
                             "messages": [HumanMessage(content=message.strip())],
                             "conversation_id": conv_id,
                             "user_id": user_id,
+                            "kb_name": kb.name if kb else "",
                         }
 
                     prev_node_key = None
@@ -123,16 +125,32 @@ class ChatService:
 
                         # 节点切换时发送 flow_end + flow_start
                         if node and node_key != prev_node_key:
+                            # 先发上一节点的 flow_end
                             if current_step is not None:
                                 duration_ms = round((time.perf_counter() - current_step["_start_ts"]) * 1000)
                                 current_step["duration_ms"] = duration_ms
                                 del current_step["_start_ts"]
+                                finished_stage = current_step["stage"]
                                 flow_steps.append(current_step)
                                 queue.put_nowait(format_sse("flow_end",
-                                    stage=current_step["stage"],
+                                    stage=finished_stage,
                                     task=current_step.get("task"),
                                     duration_ms=duration_ms,
                                 ))
+
+                                # rewrite_query 结束：此时 state 已有改写结果
+                                if finished_stage == "rewrite_query":
+                                    try:
+                                        vals = graph.get_state(config).values
+                                        questions = vals.get("rewrittenQuestions", [])
+                                        if questions:
+                                            queue.put_nowait(format_sse("query_analysis",
+                                                questions=list(questions),
+                                                is_clear=bool(vals.get("questionIsClear", False)),
+                                                original_query=vals.get("originalQuery", ""),
+                                            ))
+                                    except Exception:
+                                        logger.exception("chat.query_analysis.error")
 
                             prev_start_ts = time.perf_counter()
                             prev_node_key = node_key
@@ -148,23 +166,6 @@ class ChatService:
                                 label=label,
                                 task=task_key if is_internal else None,
                             ))
-
-                            # rewrite_query 结束时发意图分析给前端
-                            if display_node == "rewrite_query":
-                                try:
-                                    st = graph.get_state(config)
-                                    vals = st.values
-                                    questions = vals.get("rewrittenQuestions", [])
-                                    is_clear = vals.get("questionIsClear", False)
-                                    original = vals.get("originalQuery", "")
-                                    if questions:
-                                        queue.put_nowait(format_sse("query_analysis",
-                                            questions=list(questions),
-                                            is_clear=bool(is_clear),
-                                            original_query=original,
-                                        ))
-                                except Exception:
-                                    logger.exception("chat.query_analysis.error")
 
                         # 消息和工具事件
                         if node in SYSTEM_NODES and isinstance(chunk, AIMessageChunk) and chunk.content:
@@ -243,24 +244,6 @@ class ChatService:
                         ))
 
                     final_state = graph.get_state(config)
-
-                    # 兜底发意图分析（checkpoint 时序可能导致 flow_end 时读不到）
-                    try:
-                        _vals = final_state.values
-                        _questions = _vals.get("rewrittenQuestions", [])
-                        logger.info("chat.query_analysis.fallback",
-                                    state_keys=list(_vals.keys()),
-                                    questions=_questions,
-                                    is_clear=_vals.get("questionIsClear"),
-                                    original=_vals.get("originalQuery", ""))
-                        if _questions:
-                            queue.put_nowait(format_sse("query_analysis",
-                                questions=list(_questions),
-                                is_clear=bool(_vals.get("questionIsClear", False)),
-                                original_query=_vals.get("originalQuery", ""),
-                            ))
-                    except Exception:
-                        logger.exception("chat.query_analysis.fallback.error")
 
                     if final_state.next and "request_clarification" in final_state.next:
                         clarification_text = ""

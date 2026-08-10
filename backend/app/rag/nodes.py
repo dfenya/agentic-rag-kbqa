@@ -102,7 +102,10 @@ def rewrite_query(state: State, llm):
     conv_summary = state.get("conversation_summary", "")
     ltm_ctx = state.get("long_term_memory_context", "")
 
+    kb_name = state.get("kb_name", "")
     context = ""
+    if kb_name:
+        context += f"## 当前知识库\n你正在检索的知识库名称是「{kb_name}」。请确保生成的查询与知识库内容相关。\n\n"
     if ltm_ctx.strip():
         context += f"## 长期记忆（用户偏好/历史摘要，仅供参考）\n{ltm_ctx}\n\n"
     if conv_summary.strip():

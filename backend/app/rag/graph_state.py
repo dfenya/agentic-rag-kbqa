@@ -33,6 +33,9 @@ class State(MessagesState):
     # 用户 ID，多租户隔离
     user_id: str = ""
 
+    # 知识库名称，传给改写节点做上下文
+    kb_name: str = ""
+
     # 澄清计数器，防无限循环
     clarification_count: int = 0
 
