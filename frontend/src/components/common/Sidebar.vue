@@ -176,7 +176,7 @@ function logout() {
 
     <!-- 底部（仅展开时） -->
     <div v-if="!collapsed" class="sidebar-foot">
-      <span>Ollama · 本地模型</span>
+      <span>wudaofen</span>
       <button class="logout-btn" @click="logout">退出</button>
     </div>
   </el-aside>

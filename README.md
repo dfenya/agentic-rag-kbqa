@@ -1,7 +1,8 @@
 # Agentic RAG KBQA
 
 基于 LangGraph 的 Agentic RAG 知识库问答系统。上传文档到知识库，对话时 Agent 自主检索、分析、综合多份文档后生成回答。
-
+![首页界面](assets/img0.png)
+![深色模式-对话](assets/img7.png)
 ## 整体架构
 
 ```
@@ -127,6 +128,24 @@ JWT 认证，手机号注册。所有数据（知识库、文档、会话、记�
 | `backend/config/mineru.yml` | MinerU API 地址和参数 |
 | Web 设置页 | 模型、top-k、记忆开关、主题 |
 | `data/settings_{user_id}.json` | 用户个性化配置持久化 |
+
+## 界面
+登录
+![登录](assets/img8.png)
+对话-仅LLM
+![对话-仅LLM](assets/img4.png)
+对话-RAG检索+LLM
+![对话-RAG检索+LLM](assets/img1.png)
+文件处理
+![文件处理](assets/img2.png)
+记忆管理
+![记忆管理](assets/img3.png)
+系统设置
+![系统设置](assets/img5.png)
+深色模式-设置
+![深色模式-设置](assets/img6.png)
+深色模式-对话
+![深色模式-对话](assets/img7.png)
 
 ## 项目结构
 

@@ -60,9 +60,7 @@ function handleSend() {
       <template v-if="isStreaming">
         <span class="live-dot" /> AI 生成中
       </template>
-      <template v-else>
-        基于检索增强生成 · 文档溯源
-      </template>
+
     </div>
   </div>
 </template>
