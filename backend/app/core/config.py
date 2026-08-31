@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -49,9 +49,9 @@ class EmbeddingSettings(BaseSettings):
 class LLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LLM_")
     ollama_base_url: str = "http://localhost:11434"
-    model: str = "qwen3:4b-instruct-2507-q4_K_M"
-    temperature: float = 0.0
-    num_ctx: int = 8192
+    model: str = Field(default="qwen3:4b-instruct-2507-q4_K_M", min_length=1, max_length=200)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    num_ctx: int = Field(default=8192, ge=1024, le=262_144)
 
 
 class RAGSettings(BaseSettings):
@@ -60,20 +60,28 @@ class RAGSettings(BaseSettings):
     child_chunk_overlap: int = 100
     min_parent_size: int = 600
     max_parent_size: int = 4000
-    top_k: int = 3
-    score_threshold: float = 0.5
+    top_k: int = Field(default=3, ge=1, le=100)
+    score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     max_tool_calls: int = 4
     max_iterations: int = 5
     graph_recursion_limit: int = 50
     base_token_threshold: int = 1200
     token_growth_factor: float = 0.9
 
+    @model_validator(mode="after")
+    def validate_chunk_sizes(self):
+        if self.min_parent_size <= 0 or self.max_parent_size < self.min_parent_size:
+            raise ValueError("父块大小必须满足 0 < min_parent_size <= max_parent_size")
+        if self.child_chunk_size <= 0 or not 0 <= self.child_chunk_overlap < self.child_chunk_size:
+            raise ValueError("子块重叠必须满足 0 <= overlap < chunk_size")
+        return self
+
 
 class LongTermMemorySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LONG_TERM_MEMORY_")
     enabled: bool = True
-    top_k: int = 5
-    merge_threshold: float = 0.88
+    top_k: int = Field(default=5, ge=1, le=100)
+    merge_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     extraction_per_turn: int = 3
     max_records: int = 1000
 
@@ -92,11 +100,17 @@ class UploadSettings(BaseSettings):
     allowed_extensions: list[str] = [".pdf", ".md"]
 
 
+class AuthSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="AUTH_")
+    jwt_secret: str = "change-me-in-production-use-env-var"
+    token_expire_hours: int = 72
+
+
 class Settings(BaseSettings):
     """所有配置项聚合在一起"""
 
     model_config = SettingsConfigDict(
-        env_file=(".env.dev", ".env"),
+        env_file=(str(_BASE_DIR / ".env.dev"), str(_BASE_DIR / ".env")),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -110,6 +124,7 @@ class Settings(BaseSettings):
     long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     upload: UploadSettings = Field(default_factory=UploadSettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     dark_mode: bool = False
 
 
@@ -121,7 +136,16 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
         _apply_user_settings(_settings)
+        _settings = Settings.model_validate(_settings.model_dump())
     return _settings
+
+
+def get_user_settings(user_id: str) -> Settings:
+    """返回当前用户的独立配置快照，不修改进程级默认配置。"""
+    settings = Settings.model_validate(get_settings().model_dump())
+    if user_id:
+        _apply_user_settings_from_file(settings, user_id)
+    return Settings.model_validate(settings.model_dump())
 
 
 def _apply_user_settings(settings: Settings) -> None:
@@ -144,6 +168,8 @@ def _merge_settings(settings: Settings, data: dict) -> None:
             settings.llm.model = llm_data["model"]
         if "temperature" in llm_data:
             settings.llm.temperature = float(llm_data["temperature"])
+        if "num_ctx" in llm_data:
+            settings.llm.num_ctx = int(llm_data["num_ctx"])
         if "ollama_base_url" in llm_data:
             settings.llm.ollama_base_url = llm_data["ollama_base_url"]
     if "rag" in data:
@@ -176,9 +202,9 @@ def _apply_user_settings_from_file(settings: object, user_id: str) -> None:
         pass
 
 def save_user_settings(data: dict, user_id: str = "") -> None:
-    """把用户设置写入 JSON 文件，同时应用到当前进程"""
+    """保存设置；个人设置不能污染进程级默认配置。"""
     path = _user_settings_path(user_id) if user_id else _USER_SETTINGS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    if _settings is not None:
+    if not user_id and _settings is not None:
         _merge_settings(_settings, data)

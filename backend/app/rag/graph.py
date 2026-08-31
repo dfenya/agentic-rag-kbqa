@@ -29,6 +29,7 @@ def create_agent_graph(
     *,
     long_term_memory_store=None,
     sqlite_store=None,
+    settings=None,
     checkpointer_path: str = ":memory:",
     old_checkpointer_conn=None,
 ):
@@ -41,22 +42,37 @@ def create_agent_graph(
     llm_with_tools = llm.bind_tools(tools_list)
     tool_node = ToolNode(tools_list)
 
-    conn = sqlite3.connect(checkpointer_path, check_same_thread=False)
+    conn = sqlite3.connect(
+        checkpointer_path,
+        check_same_thread=False,
+        timeout=30,
+    )
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     checkpointer = SqliteSaver(conn)
 
     # Agent 子图
     agent_builder = StateGraph(AgentState)
-    agent_builder.add_node("orchestrator", partial(orchestrator, llm_with_tools=llm_with_tools))
+    agent_builder.add_node(
+        "orchestrator",
+        partial(orchestrator, llm_with_tools=llm_with_tools, settings=settings),
+    )
     agent_builder.add_node("tools", tool_node)
-    agent_builder.add_node("compress_context", partial(compress_context, llm=llm))
-    agent_builder.add_node("fallback_response", partial(fallback_response, llm=llm))
-    agent_builder.add_node("should_compress_context", should_compress_context)
+    agent_builder.add_node(
+        "compress_context", partial(compress_context, llm=llm, settings=settings)
+    )
+    agent_builder.add_node(
+        "fallback_response", partial(fallback_response, llm=llm, settings=settings)
+    )
+    agent_builder.add_node(
+        "should_compress_context", partial(should_compress_context, settings=settings)
+    )
     agent_builder.add_node("collect_answer", collect_answer)
 
     agent_builder.add_edge(START, "orchestrator")
     agent_builder.add_conditional_edges(
         "orchestrator",
-        route_after_orchestrator_call,
+        partial(route_after_orchestrator_call, settings=settings),
         {"tools": "tools", "fallback_response": "fallback_response", "collect_answer": "collect_answer", "compress_context": "compress_context"},
     )
     agent_builder.add_edge("tools", "should_compress_context")
@@ -72,7 +88,12 @@ def create_agent_graph(
     if long_term_memory_store and sqlite_store:
         graph_builder.add_node(
             "load_long_term_memory",
-            partial(load_long_term_memory_node, long_term_memory_store=long_term_memory_store, sqlite_store=sqlite_store),
+            partial(
+                load_long_term_memory_node,
+                long_term_memory_store=long_term_memory_store,
+                sqlite_store=sqlite_store,
+                settings=settings,
+            ),
         )
     graph_builder.add_node("summarize_history", partial(summarize_history, llm=llm))
     graph_builder.add_node("rewrite_query", partial(rewrite_query, llm=llm))

@@ -1,7 +1,7 @@
 """文档摄入管线：去重 → MinerU 解析 → 父子分块 → Qdrant 写入。
 
 中间文件：data/uploads (PDF) / data/markdown (MD) / data/chunks (JSON)。
-失败时自动清理所有中间文件。
+失败时回滚向量和父块索引，并保留中间文件供重试。
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from app.ingestion.dedup import check_duplicate, register_document, compute_sha2
 from app.ingestion.extractor import pdf_to_markdown
 from app.ingestion.chunker import DocumentChunker
 from app.domain.enums import DocumentStatus
+from app.core.paths import kb_storage_folder
 
 logger = structlog.get_logger()
 
@@ -46,7 +47,7 @@ class IngestionPipeline:
     def _dirs(self, kb_id: str | None):
         if kb_id:
             kb = self._sqlite.kb_by_id(kb_id)
-            folder = f"{kb.name}_{kb_id}" if kb else kb_id
+            folder = kb_storage_folder(kb.name, kb_id) if kb else kb_id
         else:
             folder = None
         upload = self._upload_dir / folder if folder else self._upload_dir
@@ -120,8 +121,10 @@ class IngestionPipeline:
             await asyncio.sleep(0)
             source_name = f"{Path(filename).stem}.pdf" if suffix == ".pdf" else filename
             sha = compute_sha256(raw_bytes)
-            parent_pairs, child_docs = self._chunker.chunk_file(
-                target, doc_id, source_name, sha, kb_id=self._kb_id)
+            parent_pairs, child_docs = await asyncio.to_thread(
+                self._chunker.chunk_file,
+                target, doc_id, source_name, sha, self._kb_id,
+            )
             emit("chunk", 1.0, f"切分完成: {len(parent_pairs)} 个父块, {len(child_docs)} 个子块",
                  {"parent_count": len(parent_pairs), "child_count": len(child_docs)})
             await asyncio.sleep(0)
@@ -138,8 +141,8 @@ class IngestionPipeline:
             current_phase[0] = "store"
             emit("store", 0.0, "正在写入向量数据库...")
             await asyncio.sleep(0)
-            self._parent.save_many(parent_pairs)
-            self._qdrant.add_documents(child_docs)
+            await asyncio.to_thread(self._parent.save_many, parent_pairs)
+            await asyncio.to_thread(self._qdrant.add_documents, child_docs)
             emit("store", 1.0, "写入完成")
             await asyncio.sleep(0)
 
@@ -158,7 +161,30 @@ class IngestionPipeline:
 
         except Exception as e:
             logger.exception("ingestion.error", doc_id=doc_id, filename=filename)
-            self._sqlite.doc_delete(doc_id)
-            self._cleanup_files(doc_id, upload_dir, md_dir, chunks_dir)
+            # 父块和子块不是同一事务，任一步失败都必须清理已写入的索引。
+            # 保留文档记录和中间文件，使 /documents/{id}/retry 真正可用。
+            try:
+                self._qdrant.delete_by_doc_id(doc_id)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "ingestion.rollback.qdrant.fail",
+                    doc_id=doc_id,
+                    error=str(cleanup_error),
+                )
+            try:
+                self._parent.delete_by_doc_id(doc_id)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "ingestion.rollback.parent.fail",
+                    doc_id=doc_id,
+                    error=str(cleanup_error),
+                )
+            self._sqlite.doc_update(
+                doc_id,
+                status=DocumentStatus.ERROR.value,
+                parent_count=0,
+                child_count=0,
+                error=str(e),
+            )
             emit(current_phase[0], 1.0, f"处理失败: {str(e)}")
             return {"doc_id": doc_id, "filename": filename, "status": DocumentStatus.ERROR.value, "error": str(e)}

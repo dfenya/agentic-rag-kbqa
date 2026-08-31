@@ -15,9 +15,6 @@ HEADERS_TO_SPLIT_ON = [
     ("#", "H1"),
     ("##", "H2"),
     ("###", "H3"),
-    (r"^第[一二三四五六七八九十百千0-9０-９]+条", "Article"),
-    (r"^第[一二三四五六七八九十百千0-9]+[编章节]", "Division"),
-    (r"^\d+(\.\d+)*\s+", "Numbered H"),
 ]
 
 
@@ -31,6 +28,10 @@ class DocumentChunker:
         child_chunk_size: int = 500,
         child_chunk_overlap: int = 100,
     ):
+        if min_parent_size <= 0 or max_parent_size < min_parent_size:
+            raise ValueError("父块大小必须满足 0 < min_parent_size <= max_parent_size")
+        if child_chunk_size <= 0 or not 0 <= child_chunk_overlap < child_chunk_size:
+            raise ValueError("子块重叠必须满足 0 <= overlap < chunk_size")
         self._parent_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=HEADERS_TO_SPLIT_ON,
             strip_headers=False,
@@ -58,11 +59,10 @@ class DocumentChunker:
         parent_docs = self._parent_splitter.split_text(processed)
         merged = self._merge_small_parents(parent_docs)
         split_parents = self._split_large_parents(merged)
-        cleaned = self._clean_small(split_parents)
 
         all_parents: List[tuple] = []
         all_children: List[Document] = []
-        self._create_children(all_parents, all_children, cleaned, doc_id, source_name, sha256, kb_id=kb_id)
+        self._create_children(all_parents, all_children, split_parents, doc_id, source_name, sha256, kb_id=kb_id)
         return all_parents, all_children
 
     def _preprocess(self, content: str) -> str:
@@ -76,6 +76,22 @@ class DocumentChunker:
             if not line.strip():
                 processed.append(line)
                 continue
+
+            stripped = line.strip()
+            # MarkdownHeaderTextSplitter 只识别字面量前缀，不支持在
+            # headers_to_split_on 中配置正则；法规标题需先正规化。
+            if not stripped.startswith("#"):
+                if re.match(r"^第[一二三四五六七八九十百千0-9０-９]+[编章节](?:\s|$)", stripped):
+                    processed.append(f"# {stripped}")
+                    continue
+                if re.match(r"^第[一二三四五六七八九十百千0-9０-９]+条(?:\s|$)", stripped):
+                    processed.append(f"## {stripped}")
+                    continue
+                numbered = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", stripped)
+                if numbered:
+                    level = min(numbered.group(1).count(".") + 1, 3)
+                    processed.append(f"{'#' * level} {stripped}")
+                    continue
 
             for prefix, marker in [
                 (r"^(\s*)-\s*(\d+)\s+(.+)$", "#"),
@@ -143,39 +159,11 @@ class DocumentChunker:
             else:
                 splitter = RecursiveCharacterTextSplitter(
                     chunk_size=self._max_parent_size,
-                    chunk_overlap=100,
+                    chunk_overlap=min(100, max(0, self._max_parent_size // 5)),
                 )
                 sub = splitter.split_documents([chunk])
                 split_chunks.extend(sub)
         return split_chunks
-
-    def _clean_small(self, chunks: List[Document]) -> List[Document]:
-        cleaned = []
-        for i, chunk in enumerate(chunks):
-            if len(chunk.page_content) < self._min_parent_size:
-                if cleaned:
-                    cleaned[-1].page_content += "\n\n" + chunk.page_content
-                    for k, v in chunk.metadata.items():
-                        cleaned[-1].metadata[k] = (
-                            f"{cleaned[-1].metadata[k]} -> {v}"
-                            if k in cleaned[-1].metadata
-                            else v
-                        )
-                elif i < len(chunks) - 1:
-                    chunks[i + 1].page_content = (
-                        chunk.page_content + "\n\n" + chunks[i + 1].page_content
-                    )
-                    for k, v in chunk.metadata.items():
-                        chunks[i + 1].metadata[k] = (
-                            f"{v} -> {chunks[i + 1].metadata[k]}"
-                            if k in chunks[i + 1].metadata
-                            else v
-                        )
-                else:
-                    cleaned.append(chunk)
-            else:
-                cleaned.append(chunk)
-        return cleaned
 
     def _create_children(
         self,

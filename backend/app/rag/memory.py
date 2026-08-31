@@ -48,21 +48,31 @@ def load_long_term_memories(
     搜到的片段由调用方写入 state.long_term_memory_context，供 rewrite/orchestrator/
     aggregate 节点参考用户偏好和历史。短期/工作记忆（当前对话上下文）不在此处理。
 
-    如果指定了 conversation_id，则只加载该会话的记忆（会话级隔离），
-    不指定则加载全局记忆（兼容旧行为）。
+    会话摘要只在来源会话内召回；用户偏好和 FAQ 在同一用户的所有会话间共享。
     """
     if not settings.long_term_memory.enabled:
         return ""
 
     try:
-        results = long_term_memory_store.search(query, k=settings.long_term_memory.top_k)
+        results = long_term_memory_store.search(
+            query,
+            k=settings.long_term_memory.top_k,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            include_user_wide=bool(conversation_id),
+        )
         if not results:
             return ""
 
-        # 从 SQLite 取完整记录，按 conversation_id 过滤后按 重要性×访问次数 排序
+        # SQLite 再做一次相同的租户/作用域校验，不能只信任向量 payload。
         mem_ids = [r["id"] for r in results]
         all_memories = {
-            m.id: m for m in sqlite.mem_list_by_ids(mem_ids, user_id, conversation_id=conversation_id or None)
+            m.id: m for m in sqlite.mem_list_by_ids(
+                mem_ids,
+                user_id,
+                conversation_id=conversation_id or None,
+                include_user_wide=bool(conversation_id),
+            )
         }
         relevant = [all_memories[mid] for mid in mem_ids if mid in all_memories]
         if not relevant:
@@ -70,7 +80,8 @@ def load_long_term_memories(
 
         now = datetime.now(timezone.utc)
         def _recency_weight(m) -> float:
-            age = now - (m.created_at.replace(tzinfo=timezone.utc) if m.created_at.tzinfo is None else m.created_at)
+            timestamp = m.updated_at or m.created_at
+            age = now - (timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp)
             for threshold, weight in _RECENCY_WEIGHTS:
                 if threshold is None or age <= threshold:
                     return weight
@@ -162,13 +173,65 @@ def store_long_term_memories(
                         "type": item_type,
                         "keywords": item.keywords,
                         "importance": existing_summary.importance,
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
                     })
                     created += 1
                     continue
                 # 不存在则走下面的新建逻辑
 
-            # ── user_preference：相似内容合并 + FAQ 自动升级 ──
-            existing = long_term_memory_store.search(item.content, k=1)
+                # 只在“新会话首次产生摘要”时统计跨会话重复主题，避免同一会话的
+                # 多轮更新被误算成多个用户问题。命中三次后把代表记录升级为 FAQ。
+                summaries = long_term_memory_store.search(
+                    item.content,
+                    k=3,
+                    memory_type=LongTermMemoryType.CONVERSATION_SUMMARY.value,
+                    user_id=user_id,
+                )
+                matching_summaries = [
+                    row for row in summaries
+                    if row["score"] >= settings.long_term_memory.merge_threshold
+                ]
+                # 两条既有会话摘要 + 当前新会话 = 至少三个独立会话。
+                # 不能复用 access_count，因为普通召回也会增加该计数。
+                if len(matching_summaries) >= 2:
+                    matched = next(
+                        (m for m in all_mems if m.id == matching_summaries[0]["id"]),
+                        None,
+                    )
+                    if matched:
+                        importance = max(
+                            matched.importance,
+                            _TYPE_INITIAL_IMPORTANCE[LongTermMemoryType.FAQ_PATTERN.value],
+                        )
+                        updated = sqlite.mem_update(
+                            matched.id,
+                            type=LongTermMemoryType.FAQ_PATTERN.value,
+                            importance=importance,
+                        )
+                        long_term_memory_store.upsert(matched.id, updated.content, {
+                            "type": LongTermMemoryType.FAQ_PATTERN.value,
+                            "keywords": json.loads(updated.keywords_json or "[]"),
+                            "importance": importance,
+                            "user_id": user_id,
+                            "conversation_id": updated.source_conversation_id or "",
+                        })
+                        logger.info(
+                            "long_term_memory.promote_faq",
+                            mem_id=matched.id,
+                            distinct_conversations=3,
+                        )
+
+            # 摘要是会话级数据，不能与另一个会话的摘要合并；偏好/FAQ 才是用户级数据。
+            if item_type == LongTermMemoryType.CONVERSATION_SUMMARY.value:
+                existing = []
+            else:
+                existing = long_term_memory_store.search(
+                    item.content,
+                    k=1,
+                    memory_type=item_type,
+                    user_id=user_id,
+                )
             if existing and existing[0]["score"] >= settings.long_term_memory.merge_threshold:
                 mem_id = existing[0]["id"]
                 existing_mem = next((m for m in all_mems if m.id == mem_id), None)
@@ -181,11 +244,6 @@ def store_long_term_memories(
                     )
                     new_type = existing_mem.type
                     new_importance = min(1.0, existing_mem.importance + 0.05)
-                    if new_count >= 3 and existing_mem.type == LongTermMemoryType.CONVERSATION_SUMMARY.value:
-                        new_type = LongTermMemoryType.FAQ_PATTERN.value
-                        new_importance = max(new_importance, _TYPE_INITIAL_IMPORTANCE[LongTermMemoryType.FAQ_PATTERN.value])
-                        logger.info("long_term_memory.promote_faq", mem_id=mem_id, hits=new_count)
-
                     sqlite.mem_update(
                         mem_id,
                         content=new_content,
@@ -198,6 +256,8 @@ def store_long_term_memories(
                         "type": new_type,
                         "keywords": item.keywords,
                         "importance": new_importance,
+                        "user_id": user_id,
+                        "conversation_id": existing_mem.source_conversation_id or conversation_id,
                     })
                     created += 1
                     continue
@@ -216,14 +276,27 @@ def store_long_term_memories(
                 "type": item_type,
                 "keywords": item.keywords,
                 "importance": init_importance,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
             })
             created += 1
 
-        # LRU 淘汰：超过最大条数就删掉访问最少的
+        # 低频淘汰：超过最大条数就删掉访问次数最少的
         total = sqlite.mem_count(user_id)
         if total > settings.long_term_memory.max_records:
-            deleted = sqlite.mem_delete_least_accessed(user_id, settings.long_term_memory.max_records)
-            logger.info("long_term_memory.evicted", deleted=deleted)
+            deleted_ids = sqlite.mem_delete_least_accessed(
+                user_id, settings.long_term_memory.max_records
+            )
+            for memory_id in deleted_ids:
+                try:
+                    long_term_memory_store.delete(memory_id)
+                except Exception as exc:
+                    logger.warning(
+                        "long_term_memory.evict_vector.fail",
+                        memory_id=memory_id,
+                        error=str(exc),
+                    )
+            logger.info("long_term_memory.evicted", deleted=len(deleted_ids))
 
         return created
 

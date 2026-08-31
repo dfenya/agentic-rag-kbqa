@@ -57,6 +57,19 @@ class QdrantStore:
     def create_collection(self):
         """如果集合不存在就创建，建密集和稀疏两个向量索引"""
         if self.collection_exists():
+            # 旧版本集合未开启 IDF；Qdrant 支持原地更新稀疏向量参数，
+            # 不需要删除已有文档或重新计算 BM25 稀疏向量。
+            try:
+                self.client.update_collection(
+                    collection_name=self.COLLECTION_NAME,
+                    sparse_vectors_config={
+                        self.SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(
+                            modifier=qmodels.Modifier.IDF,
+                        )
+                    },
+                )
+            except Exception as exc:
+                logger.warning("qdrant.sparse_idf_migration.fail", error=str(exc))
             return
         dim = len(self._dense.embed_query("test"))
         self.client.create_collection(
@@ -65,7 +78,9 @@ class QdrantStore:
                 size=dim, distance=qmodels.Distance.COSINE
             ),
             sparse_vectors_config={
-                self.SPARSE_VECTOR_NAME: qmodels.SparseVectorParams()
+                self.SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(
+                    modifier=qmodels.Modifier.IDF,
+                )
             },
         )
 

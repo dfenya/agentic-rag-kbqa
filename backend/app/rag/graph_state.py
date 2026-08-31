@@ -29,6 +29,7 @@ class State(MessagesState):
     # 长期记忆：每轮从 Qdrant+SQLite 语义检索的用户偏好/FAQ/历史摘要
     long_term_memory_context: str = ""
     conversation_id: str = ""
+    kb_id: str = ""
 
     # 用户 ID，多租户隔离
     user_id: str = ""

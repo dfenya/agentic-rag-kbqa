@@ -32,7 +32,7 @@
 │                                                      │
 │  ┌─────────────────────────────────────────────┐     │
 │  │  长期记忆：LLM 提取 → Qdrant + SQLite 双写    │     │
-│  │  按会话隔离，importance × recency 融合排序    │     │
+│  │  摘要按会话隔离，偏好/FAQ 按用户共享          │     │
 │  └─────────────────────────────────────────────┘     │
 └──────┬──────────────────────┬────────────────────────┘
        │                      │
@@ -44,7 +44,7 @@
        │
 ┌──────▼──────┐    ┌──────────────────┐
 │  Ollama     │    │  MinerU API      │
-│  LLM + Emb  │    │  PDF 解析 (可选)  │
+│  LLM        │    │  PDF 解析 (可选)  │
 └─────────────┘    └──────────────────┘
 ```
 
@@ -73,6 +73,18 @@ npm install
 npm run dev                      # 端口 5173
 ```
 
+Windows 下的 Qdrant 本地模式依赖 `pywin32`，已包含在后端依赖中。首次启动会下载体积较小的 `Qdrant/bm25` 稀疏检索模型，后续从本机缓存加载；BGE 稠密模型路径由 `EMBEDDING_DENSE_MODEL` 配置。
+
+本地修改后的基础验证：
+
+```bash
+cd backend
+python -m unittest discover -s tests -v
+
+cd ../frontend
+npm run build
+```
+
 首次使用需要注册账号（手机号 + 密码），之后用 JWT token 认证。所有数据按用户隔离。
 
 ## 核心功能
@@ -81,7 +93,7 @@ npm run dev                      # 端口 5173
 
 上传 PDF/Markdown → SHA256 去重（同 KB 内） → MinerU 转 Markdown → 父子分块 → Qdrant 向量化。
 
-Web 界面实时显示进度：去重检查 → MinerU 解析 → 文档分块 → 向量入库。中间文件保存在 `data/` 下，失败自动清理，成功保留。
+Web 界面实时显示进度：去重检查 → MinerU 解析 → 文档分块 → 向量入库。失败时回滚 Qdrant/父块索引，但保留文档记录和中间文件供重试。
 
 MinerU 配置文件：`backend/config/mineru.yml`。
 
@@ -106,7 +118,7 @@ MinerU 配置文件：`backend/config/mineru.yml`。
 
 ### 长期记忆
 
-每轮对话后 LLM 自动提取，按会话隔离，跨会话不泄露：
+每轮对话后 LLM 自动提取。`conversation_summary` 只在来源会话内召回；`user_preference` 和 `faq_pattern` 在同一用户的会话间共享，不会跨用户召回：
 
 | 类型 | 初始重要性 | 说明 |
 |------|-----------|------|

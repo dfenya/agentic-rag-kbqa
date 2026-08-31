@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from langchain_core.tools import tool
 from langchain_qdrant import QdrantVectorStore
+from qdrant_client.http import models as qmodels
 
 from app.stores.parent_store import ParentStore
 
@@ -54,10 +55,13 @@ class ToolFactory:
             filter_conditions = []
             if self.kb_id:
                 filter_conditions.append(
-                    {"key": "metadata.kb_id", "match": {"value": self.kb_id}}
+                    qmodels.FieldCondition(
+                        key="metadata.kb_id",
+                        match=qmodels.MatchValue(value=self.kb_id),
+                    )
                 )
             if filter_conditions:
-                search_kwargs["filter"] = {"must": filter_conditions}
+                search_kwargs["filter"] = qmodels.Filter(must=filter_conditions)
 
             results = self.collection.similarity_search(query, **search_kwargs)
             if not results:
@@ -94,7 +98,9 @@ class ToolFactory:
                 ids = [str(parent_ids)]
             if not ids:
                 return "NO_PARENT_DOCUMENTS"
-            raw_parents = self.parent_store.load_content_many(ids)
+            raw_parents = self.parent_store.load_content_many(
+                ids, kb_id=self.kb_id
+            )
             if not raw_parents:
                 return "NO_PARENT_DOCUMENTS"
             return "\n\n".join([

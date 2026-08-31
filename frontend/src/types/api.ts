@@ -33,6 +33,7 @@ export interface ChatRequest {
 export interface ChatResumeRequest {
   conversation_id: string
   reply: string
+  kb_id: string
 }
 
 // SSE 事件
@@ -148,4 +149,5 @@ export interface AppSettings {
   llm: Record<string, unknown>
   rag: Record<string, unknown>
   memory: Record<string, unknown>
+  dark_mode: boolean
 }

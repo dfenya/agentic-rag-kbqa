@@ -41,13 +41,12 @@ from app.core.config import get_settings
 # ── 长期记忆加载 ──
 
 
-def load_long_term_memory_node(state: State, long_term_memory_store, sqlite_store):
+def load_long_term_memory_node(state: State, long_term_memory_store, sqlite_store, settings=None):
     """每轮对话开始前，从长期记忆中语义检索相关片段，注入到 long_term_memory_context
 
-    按 conversation_id 做会话级隔离，只加载当前会话内的长期记忆，
-    不会跨会话泄露用户偏好/FAQ/摘要。
+    会话摘要按 conversation_id 隔离；用户偏好和 FAQ 在同一用户内跨会话共享。
     """
-    settings = get_settings()
+    settings = settings or get_settings()
     conv_id = state.get("conversation_id", "")
     last_msg = state["messages"][-1] if state["messages"] else None
     if not last_msg:
@@ -137,20 +136,24 @@ def rewrite_query(state: State, llm):
         if response.clarification_needed and len(response.clarification_needed.strip()) > 10
         else "我需要更多信息来理解您的问题，请问您能补充一些具体情况吗？"
     )
-    return {"questionIsClear": False, "messages": [AIMessage(content=clarification)]}
+    return {
+        "questionIsClear": False,
+        "messages": [AIMessage(content=clarification)],
+        "originalQuery": last_message.content,
+        # 图在 request_clarification 节点执行前中断，因此必须在这里计数。
+        "clarification_count": state.get("clarification_count", 0) + 1,
+    }
 
 
 def request_clarification(state: State):
-    """占位——图在这里中断等待用户补充信息。
-    每次进入澄清状态时递增计数器，防止无限循环。
-    """
-    return {"clarification_count": state.get("clarification_count", 0) + 1}
+    """占位——图在执行此节点前中断，等待用户补充信息。"""
+    return {}
 
 
 # ── Agent 子图节点 ──
 
 
-def orchestrator(state: AgentState, llm_with_tools):
+def orchestrator(state: AgentState, llm_with_tools, settings=None):
     """Agent 大脑：决定搜索、回溯父块、还是直接回答"""
     ctx_summary = state.get("context_summary", "").strip()
     sys_msg = SystemMessage(content=ORCHESTRATOR_PROMPT)
@@ -173,7 +176,7 @@ def orchestrator(state: AgentState, llm_with_tools):
     if state.get("messages"):
         all_msgs = [sys_msg] + summary_injection + state["messages"]
         estimated = estimate_tokens(all_msgs)
-        settings = get_settings()
+        settings = settings or get_settings()
         safe_limit = int(settings.llm.num_ctx * 0.75)  # 模型上下文窗口的 75%
         if estimated > safe_limit:
             # 不调 LLM，返回一个虚拟消息，让路由走到 fallback_response 或 collect_answer
@@ -216,7 +219,7 @@ def orchestrator(state: AgentState, llm_with_tools):
     }
 
 
-def fallback_response(state: AgentState, llm):
+def fallback_response(state: AgentState, llm, settings=None):
     """熔断兜底：达到最大轮次时强制用已有数据生成回答"""
     seen = set()
     unique_contents = []
@@ -241,7 +244,7 @@ def fallback_response(state: AgentState, llm):
     context_text = "\n\n".join(context_parts) if context_parts else "未能从文档中检索到任何数据。"
 
     # 安全截断：总 prompt 不能超过 num_ctx 的 60%
-    settings = get_settings()
+    settings = settings or get_settings()
     max_chars = int(settings.llm.num_ctx * 0.6 / 1.5)
     if len(context_text) > max_chars:
         context_text = context_text[:max_chars] + "\n…[内容过长，已截断]"
@@ -262,9 +265,9 @@ def fallback_response(state: AgentState, llm):
 # ── 上下文压缩 ──
 
 
-def should_compress_context(state: AgentState) -> Command[Literal["compress_context", "orchestrator"]]:
+def should_compress_context(state: AgentState, settings=None) -> Command[Literal["compress_context", "orchestrator"]]:
     """检查 token 是否超标，决定压缩还是继续"""
-    settings = get_settings()
+    settings = settings or get_settings()
     messages = state["messages"]
     new_ids: Set[str] = set()
 
@@ -292,7 +295,7 @@ def should_compress_context(state: AgentState) -> Command[Literal["compress_cont
     return Command(update={"retrieval_keys": updated_ids}, goto=goto)
 
 
-def compress_context(state: AgentState, llm):
+def compress_context(state: AgentState, llm, settings=None):
     """把冗长的工具调用记录压缩成结构化摘要"""
     messages = state["messages"]
     existing_summary = state.get("context_summary", "").strip()
@@ -321,7 +324,7 @@ def compress_context(state: AgentState, llm):
             conversation_text += f"[工具结果 — {name}]\n{content}\n\n"
 
     # 安全截断：压缩输入总长度不超过 num_ctx * 0.6 个 token（按 1.5 token/char 估算）
-    settings = get_settings()
+    settings = settings or get_settings()
     max_chars = int(settings.llm.num_ctx * 0.6 / 1.5)
     if len(conversation_text) > max_chars:
         conversation_text = conversation_text[:max_chars] + "\n…[输入过长，已截断]"

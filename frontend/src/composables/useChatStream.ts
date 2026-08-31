@@ -86,7 +86,7 @@ export function useChatStream() {
   }
 
   async function resumeClarification(reply: string) {
-    if (!store.conversationId) return
+    if (!store.conversationId || !store.kbId) return
     abort()
     store.isStreaming = true
     store.resetFlow()
@@ -106,7 +106,7 @@ export function useChatStream() {
 
     try {
       const response = await resumeSSE(
-        { conversation_id: store.conversationId, reply },
+        { conversation_id: store.conversationId, reply, kb_id: store.kbId },
         abortController.signal,
       )
       if (!response.ok) throw new Error(`HTTP ${response.status}`)

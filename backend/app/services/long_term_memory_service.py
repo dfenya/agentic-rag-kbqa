@@ -23,12 +23,14 @@ class LongTermMemoryService:
         if not mem or mem.user_id != user_id:
             return None
         mem = self._db.mem_update(mem_id, **kwargs)
-        if mem and "content" in kwargs:
+        if mem and ({"content", "importance"} & kwargs.keys()):
             try:
                 self._store.upsert(mem.id, mem.content, {
                     "type": mem.type,
                     "keywords": json.loads(mem.keywords_json or "[]"),
                     "importance": mem.importance,
+                    "user_id": mem.user_id,
+                    "conversation_id": mem.source_conversation_id or "",
                 })
             except Exception as e:
                 logger.warning("long_term_memory.service.update_vector.fail", mem_id=mem_id, error=str(e))

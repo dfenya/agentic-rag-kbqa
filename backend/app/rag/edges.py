@@ -27,6 +27,12 @@ def route_after_rewrite(state: State) -> Literal["request_clarification", "agent
         return "request_clarification"
 
     ltm_ctx = state.get("long_term_memory_context", "")
+    # Schema 已限制最多 3 个，这里再次切片作为运行时防御，避免未来替换
+    # 结构化输出实现后意外创建过多并行子任务。
+    questions = [q.strip() for q in state.get("rewrittenQuestions", []) if q.strip()][:3]
+    if not questions:
+        questions = [state.get("originalQuery", "").strip()]
+
     return [
         Send(
             "agent",
@@ -37,15 +43,16 @@ def route_after_rewrite(state: State) -> Literal["request_clarification", "agent
                 "long_term_memory_context": ltm_ctx,
             },
         )
-        for idx, query in enumerate(state["rewrittenQuestions"])
+        for idx, query in enumerate(questions)
     ]
 
 
 def route_after_orchestrator_call(
     state: AgentState,
+    settings=None,
 ) -> Literal["tools", "fallback_response", "collect_answer", "compress_context"]:
     """Agent 思考完后：调工具、熔断兜底、收集答案、还是压缩上下文"""
-    settings = get_settings()
+    settings = settings or get_settings()
     iteration = state.get("iteration_count", 0)
     tool_count = state.get("tool_call_count", 0)
 

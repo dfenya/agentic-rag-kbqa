@@ -9,6 +9,7 @@ from app.stores.qdrant_store import QdrantStore
 from app.stores.parent_store import ParentStore
 from app.domain.models import Document
 from app.domain.enums import DocumentStatus
+from app.core.paths import kb_storage_folder
 
 logger = structlog.get_logger()
 
@@ -43,7 +44,7 @@ class DocumentService:
         folder = None
         if kb_id:
             kb = self._db.kb_by_id(kb_id)
-            folder = f"{kb.name}_{kb_id}" if kb else kb_id
+            folder = kb_storage_folder(kb.name, kb_id) if kb else kb_id
         dirs = [self._upload_dir, self._md_dir, self._chunks_dir]
         if folder:
             dirs = [d / folder for d in dirs]
@@ -59,6 +60,9 @@ class DocumentService:
             kb = self._db.kb_by_id(doc.kb_id)
             if not kb or kb.user_id != user_id:
                 return False
+        else:
+            # 历史孤儿文档没有可验证的用户归属，不能允许任意登录用户删除。
+            return False
 
         child_count = self._qdrant.delete_by_doc_id(doc_id)
         parent_count = self._parent.delete_by_doc_id(doc_id)
@@ -82,6 +86,8 @@ class DocumentService:
             kb = self._db.kb_by_id(doc.kb_id)
             if not kb or kb.user_id != user_id:
                 return None
+        else:
+            return None
 
         from app.ingestion.chunker import DocumentChunker
         from app.core.config import get_settings
@@ -90,13 +96,16 @@ class DocumentService:
         folder = doc.kb_id
         if doc.kb_id:
             kb = self._db.kb_by_id(doc.kb_id)
-            folder = f"{kb.name}_{doc.kb_id}" if kb else doc.kb_id
+            folder = kb_storage_folder(kb.name, doc.kb_id) if kb else doc.kb_id
         md_path = (self._md_dir / folder if folder else self._md_dir) / f"{doc_id}.md"
         if not md_path.exists():
             self._db.doc_update(doc_id, error="Markdown 文件丢失，无法重试")
             return self._db.doc_by_id(doc_id)
 
         try:
+            self._db.doc_update(
+                doc_id, status=DocumentStatus.PROCESSING.value, error=None
+            )
             self._qdrant.delete_by_doc_id(doc_id)
             self._parent.delete_by_doc_id(doc_id)
 
@@ -126,6 +135,20 @@ class DocumentService:
             logger.info("document.retry.success", doc_id=doc_id)
         except Exception as e:
             logger.exception("document.retry.error", doc_id=doc_id)
-            self._db.doc_update(doc_id, error=str(e))
+            try:
+                self._qdrant.delete_by_doc_id(doc_id)
+            except Exception:
+                logger.exception("document.retry.rollback_qdrant.error", doc_id=doc_id)
+            try:
+                self._parent.delete_by_doc_id(doc_id)
+            except Exception:
+                logger.exception("document.retry.rollback_parent.error", doc_id=doc_id)
+            self._db.doc_update(
+                doc_id,
+                status=DocumentStatus.ERROR.value,
+                parent_count=0,
+                child_count=0,
+                error=str(e),
+            )
 
         return self._db.doc_by_id(doc_id)

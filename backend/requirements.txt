@@ -23,6 +23,7 @@ langgraph-checkpoint-sqlite==3.0.1
 # ── Vector DB ──
 qdrant-client==1.16.2
 fastembed==0.7.4
+pywin32>=311; sys_platform == "win32"
 
 # ── Embeddings ──
 huggingface-hub==0.36.0

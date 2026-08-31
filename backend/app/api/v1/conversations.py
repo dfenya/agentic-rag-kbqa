@@ -30,6 +30,8 @@ async def list_conversations(q: str | None = None, request: Request = None, user
 @router.get("/{conv_id}/messages")
 async def get_messages(conv_id: str, request: Request, user_id: str = Depends(get_current_user)):
     container = get_container(request)
+    if not container.conversation_service.get(user_id, conv_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     msgs = container.conversation_service.get_messages(user_id, conv_id)
     result = []
     for m in msgs:

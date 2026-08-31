@@ -2,7 +2,6 @@ from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.services.auth_service import decode_token
-from app.core.config import _apply_user_settings_from_file, get_settings
 
 security = HTTPBearer()
 
@@ -25,6 +24,4 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
 
-    # 加载该用户的个人设置到运行时
-    _apply_user_settings_from_file(get_settings(), user_id)
     return user_id

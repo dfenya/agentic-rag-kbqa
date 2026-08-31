@@ -3,6 +3,10 @@
 在 app lifespan 里调 init() 初始化，close() 释放资源。
 """
 
+import asyncio
+import threading
+from urllib.parse import urlparse
+
 import structlog
 from langchain_ollama import ChatOllama
 
@@ -17,6 +21,12 @@ from app.services.document_service import DocumentService
 from app.services.long_term_memory_service import LongTermMemoryService
 
 logger = structlog.get_logger()
+
+
+def _http_client_kwargs(base_url: str) -> dict:
+    """访问本机 Ollama 时忽略系统代理，避免 localhost 被错误转发。"""
+    hostname = (urlparse(base_url).hostname or "").lower()
+    return {"trust_env": False} if hostname in {"localhost", "127.0.0.1", "::1"} else {}
 
 
 class Container:
@@ -34,17 +44,26 @@ class Container:
         self.conversation_service: ConversationService | None = None
         self.document_service: DocumentService | None = None
         self.long_term_memory_service: LongTermMemoryService | None = None
+        self.chat_service = None
+        self.ingestion_semaphore = None
 
         self.langfuse_handler = None
         self._graph = None
         self._checkpointer_conn = None
+        self._graphs: dict[tuple, object] = {}
+        self._checkpointer_conns: list[object] = []
+        self._graph_lock = threading.Lock()
 
-    def create_llm(self, **overrides) -> ChatOllama:
+    def create_llm(self, settings=None, **overrides) -> ChatOllama:
+        settings = settings or self.settings
+        base_url = overrides.get("base_url", settings.llm.ollama_base_url)
         llm = ChatOllama(
-            model=overrides.get("model", self.settings.llm.model),
-            temperature=overrides.get("temperature", self.settings.llm.temperature),
-            base_url=overrides.get("base_url", self.settings.llm.ollama_base_url),
-            num_ctx=overrides.get("num_ctx", self.settings.llm.num_ctx),
+            model=overrides.get("model", settings.llm.model),
+            temperature=overrides.get("temperature", settings.llm.temperature),
+            base_url=base_url,
+            num_ctx=overrides.get("num_ctx", settings.llm.num_ctx),
+            client_kwargs=_http_client_kwargs(base_url),
+            async_client_kwargs=_http_client_kwargs(base_url),
         )
         if self.langfuse_handler:
             llm = llm.with_config(callbacks=[self.langfuse_handler])
@@ -54,14 +73,34 @@ class Container:
     def graph(self):
         return self._graph
 
-    def compile_graph(self, kb_id: str | None = None):
-        """编译/重编译 LangGraph agent 图，按知识库隔离检索"""
-        self._compile_graph(kb_id=kb_id)
-        return self._graph
+    def compile_graph(self, kb_id: str | None = None, settings=None):
+        """按知识库和关键配置缓存 LangGraph，避免并发请求互相关闭连接。"""
+        settings = settings or self.settings
+        cache_key = (
+            kb_id,
+            settings.llm.model,
+            settings.llm.temperature,
+            settings.llm.ollama_base_url,
+            settings.llm.num_ctx,
+            settings.rag.top_k,
+            settings.rag.score_threshold,
+            settings.rag.max_tool_calls,
+            settings.rag.max_iterations,
+            settings.long_term_memory.enabled,
+            settings.long_term_memory.top_k,
+        )
+        with self._graph_lock:
+            graph = self._graphs.get(cache_key)
+            if graph is None:
+                graph = self._compile_graph(kb_id=kb_id, settings=settings)
+                self._graphs[cache_key] = graph
+            self._graph = graph
+            return graph
 
     async def init(self):
         """启动时初始化：SQLite → Qdrant → 业务服务 → RAG 图"""
         logger.info("container.init.start")
+        self.ingestion_semaphore = asyncio.Semaphore(1)
 
         self.sqlite = SqliteStore(self.settings.storage.sqlite_path)
         self.sqlite.create_all()
@@ -76,12 +115,39 @@ class Container:
         self.long_term_memory_store = LongTermMemoryStore(self.settings)
         self.long_term_memory_store.init(self.qdrant.client, self.qdrant._dense)
 
+        # 兼容旧版本向量：旧 payload 没有 user_id/conversation_id，升级后会被
+        # Qdrant 的范围过滤排除。启动时只补 metadata，不重新计算 embedding。
+        migrated = 0
+        for memory in self.sqlite.mem_all_records():
+            try:
+                self.long_term_memory_store.update_scope_payload(
+                    memory.id,
+                    user_id=memory.user_id,
+                    conversation_id=memory.source_conversation_id or "",
+                )
+                migrated += 1
+            except Exception as e:
+                logger.warning(
+                    "long_term_memory.scope_migration.fail",
+                    memory_id=memory.id,
+                    error=str(e),
+                )
+        if migrated:
+            logger.info("long_term_memory.scope_migration.done", count=migrated)
+
         logger.info("container.stores.ready")
 
-        self.auth_service = AuthService(self.sqlite)
+        if (
+            self.settings.app.env == "prod"
+            and self.settings.auth.jwt_secret == "change-me-in-production-use-env-var"
+        ):
+            raise RuntimeError("生产环境必须通过 AUTH_JWT_SECRET 配置 JWT 密钥")
+        self.auth_service = AuthService(self.sqlite, self.settings)
         self.conversation_service = ConversationService(self.sqlite)
         self.document_service = DocumentService(self.sqlite, self.qdrant, self.parent, self.settings)
         self.long_term_memory_service = LongTermMemoryService(self.sqlite, self.long_term_memory_store)
+        from app.services.chat_service import ChatService
+        self.chat_service = ChatService(self)
 
         logger.info("container.services.ready")
 
@@ -95,25 +161,26 @@ class Container:
 
         # RAG 图需要 Ollama 在线才能编译
         try:
-            self._compile_graph()
+            self.compile_graph()
             logger.info("container.graph.ready")
         except Exception as e:
             logger.warning("container.graph.unavailable", error=str(e))
 
         logger.info("container.init.done")
 
-    def _compile_graph(self, kb_id: str | None = None):
+    def _compile_graph(self, kb_id: str | None = None, settings=None):
         from app.rag.tools import ToolFactory
         from app.rag.graph import create_agent_graph
 
-        llm = self.create_llm()
+        settings = settings or self.settings
+        llm = self.create_llm(settings=settings)
 
         collection = self.qdrant.as_vector_store()
         tools = ToolFactory(
             collection=collection,
             parent_store=self.parent,
-            top_k=self.settings.rag.top_k,
-            score_threshold=self.settings.rag.score_threshold,
+            top_k=settings.rag.top_k,
+            score_threshold=settings.rag.score_threshold,
             kb_id=kb_id,
         ).create_tools()
 
@@ -124,19 +191,24 @@ class Container:
             tools_list=tools,
             long_term_memory_store=self.long_term_memory_store,
             sqlite_store=self.sqlite,
+            settings=settings,
             checkpointer_path=checkpointer_path,
-            old_checkpointer_conn=self._checkpointer_conn,
         )
         self._checkpointer_conn = getattr(self._graph, '_checkpointer_conn', None)
+        if self._checkpointer_conn is not None:
+            self._checkpointer_conns.append(self._checkpointer_conn)
+        return self._graph
 
     async def close(self):
         """关闭时释放数据库连接等资源"""
         logger.info("container.close.start")
-        if self._checkpointer_conn:
+        for conn in self._checkpointer_conns:
             try:
-                self._checkpointer_conn.close()
+                conn.close()
             except Exception:
                 pass
+        self._checkpointer_conns.clear()
+        self._graphs.clear()
         if self.qdrant:
             self.qdrant.close()
         logger.info("container.close.done")
@@ -164,7 +236,11 @@ class Container:
 
         try:
             import httpx
-            resp = httpx.get(f"{self.settings.llm.ollama_base_url}/api/tags", timeout=5)
+            resp = httpx.get(
+                f"{self.settings.llm.ollama_base_url}/api/tags",
+                timeout=5,
+                **_http_client_kwargs(self.settings.llm.ollama_base_url),
+            )
             if resp.status_code == 200:
                 result["ollama"] = "ok"
             else:

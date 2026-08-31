@@ -14,7 +14,7 @@ from typing import AsyncGenerator, Optional
 import structlog
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, ToolMessage, SystemMessage
 
-from app.core.config import get_settings
+from app.core.config import get_user_settings
 from app.core.container import Container
 from app.rag.prompts.legal import PLAIN_LLM_SYSTEM_PROMPT
 from app.services.chat_utils import format_sse, extract_sources
@@ -43,12 +43,24 @@ NODE_LABELS = {
 AGENT_INTERNAL_NODES = {"orchestrator", "tools", "compress_context", "fallback_response", "collect_answer"}
 
 
+class _ThreadSafeQueueWriter:
+    """把后台线程产生的SSE事件安全投递到事件循环中的 asyncio.Queue。"""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
+        self._loop = loop
+        self._queue = queue
+
+    def put_nowait(self, item: str) -> None:
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+
+
 class ChatService:
     """执行 RAG 图和纯 LLM 对话，生成 SSE 事件流"""
 
     def __init__(self, container: Container):
         self._container = container
         self._semaphore = asyncio.Semaphore(4)
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
 
     async def stream_chat(
         self,
@@ -59,30 +71,56 @@ class ChatService:
         user_id: str = "",
     ) -> AsyncGenerator[str, None]:
         """SSE 事件生成器，给 POST /chat/stream 用"""
-        async with self._semaphore:
-            queue: asyncio.Queue = asyncio.Queue()
+        conv_id = conversation_id or str(uuid.uuid4())
+        conversation_lock = self._conversation_locks.setdefault(
+            conv_id, asyncio.Lock()
+        )
+        async with self._semaphore, conversation_lock:
+            event_queue: asyncio.Queue = asyncio.Queue()
+            queue = _ThreadSafeQueueWriter(
+                asyncio.get_running_loop(), event_queue
+            )
             cancel_event = threading.Event()
-            conv_id = conversation_id or str(uuid.uuid4())
+            settings = get_user_settings(user_id)
 
             def runner():
                 try:
                     # 没选知识库 → 纯 LLM 对话，不走检索和图
                     if not kb_id:
-                        self._run_plain_llm(conv_id, message.strip(), queue, cancel_event, user_id=user_id)
+                        self._run_plain_llm(
+                            conv_id,
+                            message.strip(),
+                            queue,
+                            cancel_event,
+                            user_id=user_id,
+                            settings=settings,
+                        )
                         return
 
                     config = {
-                        "configurable": {"thread_id": conv_id},
-                        "recursion_limit": get_settings().rag.graph_recursion_limit,
+                        # LangGraph checkpoint 不只按会话，还要按租户和知识库隔离；
+                        # 否则同一会话切换知识库会继续使用上一知识库的状态。
+                        "configurable": {
+                            "thread_id": f"{user_id}:{kb_id}:{conv_id}"
+                        },
+                        "recursion_limit": settings.rag.graph_recursion_limit,
                     }
 
-                    graph = self._container.compile_graph(kb_id=kb_id)
+                    graph = self._container.compile_graph(
+                        kb_id=kb_id, settings=settings
+                    )
                     if graph is None:
                         queue.put_nowait(format_sse("error", message="Graph 未初始化"))
                         queue.put_nowait(format_sse("done"))
                         return
 
-                    self._begin_turn(conv_id, message.strip(), queue, user_id=user_id)
+                    self._begin_turn(
+                        conv_id,
+                        message.strip(),
+                        queue,
+                        user_id=user_id,
+                        model=settings.llm.model,
+                    )
 
                     # 如果是从 clarification 中断恢复的，注入用户回复后继续
                     current_state = graph.get_state(config)
@@ -94,6 +132,7 @@ class ChatService:
                         stream_input = {
                             "messages": [HumanMessage(content=message.strip())],
                             "conversation_id": conv_id,
+                            "kb_id": kb_id,
                             "user_id": user_id,
                             "kb_name": kb.name if kb else "",
                         }
@@ -283,7 +322,13 @@ class ChatService:
                                 except Exception as e:
                                     logger.exception("chat.persist.error", conv_id=conv_id, error=str(e))
 
-                                self._extract_memories(message.strip(), assistant_text, conv_id, user_id=user_id)
+                                self._extract_memories(
+                                    message.strip(),
+                                    assistant_text,
+                                    conv_id,
+                                    user_id=user_id,
+                                    settings=settings,
+                                )
                         except Exception:
                             pass
 
@@ -299,25 +344,40 @@ class ChatService:
 
             try:
                 while True:
-                    event_str = await queue.get()
+                    event_str = await event_queue.get()
                     yield event_str
-                    if json.loads(event_str.lstrip("data: ").strip()).get("type") == "done":
+                    payload = event_str.removeprefix("data: ").strip()
+                    if json.loads(payload).get("type") == "done":
                         break
             except asyncio.CancelledError:
                 # 客户端主动断开（点击停止、切会话、刷新页面）：通知后台线程取消生成
                 logger.info("chat.stream.client_disconnected", conv_id=conv_id)
                 cancel_event.set()
-                while not queue.empty():
+                while not event_queue.empty():
                     try:
-                        queue.get_nowait()
+                        event_queue.get_nowait()
                     except Exception:
                         pass
+            finally:
+                # SSE 的 done 事件可能略早于后台线程真正退出；等待它收尾，
+                # 避免同一会话下一轮与上一轮的持久化交叉。
+                if thread.is_alive():
+                    await asyncio.to_thread(thread.join, 5)
 
-    def _run_plain_llm(self, conv_id: str, user_msg: str, queue: asyncio.Queue, cancel_event: threading.Event, user_id: str = "") -> None:
+        if not conversation_lock.locked():
+            self._conversation_locks.pop(conv_id, None)
+
+    def _run_plain_llm(self, conv_id: str, user_msg: str, queue, cancel_event: threading.Event, user_id: str = "", settings=None) -> None:
         """纯 LLM 对话：不走 LangGraph，直接调 Ollama 流式生成"""
-        settings = get_settings()
+        settings = settings or get_user_settings(user_id)
 
-        self._begin_turn(conv_id, user_msg, queue, user_id=user_id)
+        self._begin_turn(
+            conv_id,
+            user_msg,
+            queue,
+            user_id=user_id,
+            model=settings.llm.model,
+        )
 
         queue.put_nowait(format_sse("status", stage="llm", label="生成回答…"))
         queue.put_nowait(format_sse("flow_start", stage="llm", label="LLM 生成回答"))
@@ -351,7 +411,7 @@ class ChatService:
         msgs.append(HumanMessage(content=user_msg))
 
         start_ts = time.perf_counter()
-        llm = self._container.create_llm()
+        llm = self._container.create_llm(settings=settings)
 
         assistant_text = ""
         try:
@@ -409,16 +469,23 @@ class ChatService:
             except Exception:
                 logger.exception("chat.plain.persist.assistant.error", conv_id=conv_id)
 
-            self._extract_memories(user_msg, assistant_text, conv_id, llm=llm)
+            self._extract_memories(
+                user_msg,
+                assistant_text,
+                conv_id,
+                llm=llm,
+                user_id=user_id,
+                settings=settings,
+            )
 
         queue.put_nowait(format_sse("done", conversation_id=conv_id))
 
-    def _begin_turn(self, conv_id: str, user_msg: str, queue: asyncio.Queue, user_id: str = "") -> None:
+    def _begin_turn(self, conv_id: str, user_msg: str, queue, user_id: str = "", model: str = "") -> None:
         """每轮对话开始前的公共步骤"""
         self._container.conversation_service.get_or_create(
             user_id, conv_id,
             first_message=user_msg,
-            model=self._container.settings.llm.model,
+            model=model or self._container.settings.llm.model,
         )
         conv = self._container.conversation_service.get(user_id, conv_id)
         if conv and conv.message_count == 0 and user_msg:
@@ -431,20 +498,21 @@ class ChatService:
             logger.exception("chat.persist.user_msg.error", conv_id=conv_id)
         queue.put_nowait(format_sse("session", conversation_id=conv_id))
 
-    def _extract_memories(self, user_msg: str, assistant_text: str, conv_id: str, llm=None, user_id: str = "") -> None:
+    def _extract_memories(self, user_msg: str, assistant_text: str, conv_id: str, llm=None, user_id: str = "", settings=None) -> None:
         """从本轮对话中提取长期记忆"""
         from app.rag.memory import store_long_term_memories
 
         try:
+            settings = settings or get_user_settings(user_id)
             if llm is None:
-                llm = self._container.create_llm()
+                llm = self._container.create_llm(settings=settings)
             conversation_text = f"用户: {user_msg}\n助手: {assistant_text}"
             created = store_long_term_memories(
                 conversation_text=conversation_text,
                 llm=llm,
                 long_term_memory_store=self._container.long_term_memory_store,
                 sqlite=self._container.sqlite,
-                settings=get_settings(),
+                settings=settings,
                 conversation_id=conv_id,
                 user_id=user_id,
             )

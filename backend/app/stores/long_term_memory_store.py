@@ -55,23 +55,73 @@ class LongTermMemoryStore:
             points_selector=qmodels.PointIdsList(points=[memory_id]),
         )
 
+    def update_scope_payload(
+        self,
+        memory_id: str,
+        *,
+        user_id: str,
+        conversation_id: str = "",
+    ) -> None:
+        """为已有向量补齐租户范围字段，不重新计算 embedding。"""
+        if not self._client.collection_exists(self.COLLECTION_NAME):
+            return
+        self._client.set_payload(
+            collection_name=self.COLLECTION_NAME,
+            payload={
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+            },
+            points=[memory_id],
+        )
+
     def search(
         self,
         query: str,
         k: int = 5,
         memory_type: Optional[str] = None,
+        user_id: str = "",
+        conversation_id: str = "",
+        include_user_wide: bool = False,
     ) -> List[dict]:
         """语义搜索，返回 [{id, score, payload}, ...]"""
         if not self._client.collection_exists(self.COLLECTION_NAME):
             return []
         vec = self._embeddings.embed_query(query)
-        query_filter = None
+        must_conditions = []
         if memory_type:
-            query_filter = qmodels.Filter(
-                must=[qmodels.FieldCondition(
-                    key="type", match=qmodels.MatchValue(value=memory_type)
-                )]
+            must_conditions.append(qmodels.FieldCondition(
+                key="type", match=qmodels.MatchValue(value=memory_type)
+            ))
+        if user_id:
+            must_conditions.append(qmodels.FieldCondition(
+                key="user_id", match=qmodels.MatchValue(value=user_id)
+            ))
+        should_conditions = []
+        if conversation_id:
+            conversation_condition = qmodels.FieldCondition(
+                key="conversation_id", match=qmodels.MatchValue(value=conversation_id)
             )
+            if include_user_wide:
+                should_conditions = [
+                    conversation_condition,
+                    qmodels.FieldCondition(
+                        key="type",
+                        match=qmodels.MatchValue(value="user_preference"),
+                    ),
+                    qmodels.FieldCondition(
+                        key="type",
+                        match=qmodels.MatchValue(value="faq_pattern"),
+                    ),
+                ]
+            else:
+                must_conditions.append(conversation_condition)
+        query_filter = (
+            qmodels.Filter(
+                must=must_conditions or None,
+                should=should_conditions or None,
+            )
+            if must_conditions or should_conditions else None
+        )
         results = self._client.query_points(
             collection_name=self.COLLECTION_NAME,
             query=vec,

@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Request, HTTPException, Depends
 from app.api.v1.deps import get_container, get_current_user
 from app.domain.schemas import DocumentResponse, DocumentListResponse
@@ -34,7 +36,7 @@ async def delete_document(doc_id: str, request: Request, user_id: str = Depends(
 @router.post("/{doc_id}/retry")
 async def retry_document(doc_id: str, request: Request, user_id: str = Depends(get_current_user)):
     container = get_container(request)
-    doc = container.document_service.retry(user_id, doc_id)
+    doc = await asyncio.to_thread(container.document_service.retry, user_id, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found or not in error state")
     return DocumentResponse(

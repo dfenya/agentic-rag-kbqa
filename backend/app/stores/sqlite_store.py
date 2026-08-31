@@ -291,11 +291,17 @@ class SqliteStore:
         with self.session() as s:
             return s.query(LongTermMemory).filter_by(user_id=user_id).all()
 
+    def mem_all_records(self) -> list[LongTermMemory]:
+        """返回全部长期记忆，仅供启动迁移和一致性维护使用。"""
+        with self.session() as s:
+            return s.query(LongTermMemory).all()
+
     def mem_list_by_ids(
         self,
         mem_ids: list[str],
         user_id: str,
         conversation_id: str | None = None,
+        include_user_wide: bool = False,
     ) -> list[LongTermMemory]:
         with self.session() as s:
             q = s.query(LongTermMemory).filter(
@@ -303,23 +309,37 @@ class SqliteStore:
                 LongTermMemory.user_id == user_id,
             )
             if conversation_id:
-                q = q.filter(LongTermMemory.source_conversation_id == conversation_id)
+                if include_user_wide:
+                    from sqlalchemy import or_
+                    q = q.filter(or_(
+                        LongTermMemory.source_conversation_id == conversation_id,
+                        LongTermMemory.type.in_(("user_preference", "faq_pattern")),
+                    ))
+                else:
+                    q = q.filter(LongTermMemory.source_conversation_id == conversation_id)
             return q.all()
 
     def mem_count(self, user_id: str) -> int:
         with self.session() as s:
             return s.query(LongTermMemory).filter_by(user_id=user_id).count()
 
-    def mem_delete_least_accessed(self, user_id: str, keep: int) -> int:
-        """LRU 淘汰：保留访问最多的 keep 条，删掉其余的"""
+    def mem_delete_least_accessed(self, user_id: str, keep: int) -> list[str]:
+        """低频淘汰：保留访问最多的 keep 条，返回被删除的记忆 ID。"""
         with self.session() as s:
             to_keep = s.query(LongTermMemory).filter_by(user_id=user_id).order_by(LongTermMemory.access_count.desc()).limit(keep).all()
             keep_ids = {m.id for m in to_keep}
-            deleted = s.query(LongTermMemory).filter(LongTermMemory.user_id == user_id, ~LongTermMemory.id.in_(keep_ids)).delete(
+            victims = s.query(LongTermMemory.id).filter(
+                LongTermMemory.user_id == user_id,
+                ~LongTermMemory.id.in_(keep_ids),
+            ).all()
+            deleted_ids = [row[0] for row in victims]
+            if not deleted_ids:
+                return []
+            s.query(LongTermMemory).filter(LongTermMemory.id.in_(deleted_ids)).delete(
                 synchronize_session=False
             )
             s.commit()
-            return deleted
+            return deleted_ids
 
     # ── 设置 ──
 
@@ -352,13 +372,17 @@ class SqliteStore:
                 s.merge(pc)
             s.commit()
 
-    def parent_load_many(self, parent_ids: list[str]) -> list[dict]:
+    def parent_load_many(self, parent_ids: list[str], kb_id: str | None = None) -> list[dict]:
         with self.session() as s:
-            chunks = s.query(ParentChunk).filter(ParentChunk.parent_id.in_(parent_ids)).all()
+            query = s.query(ParentChunk).filter(ParentChunk.parent_id.in_(parent_ids))
+            if kb_id:
+                query = query.filter(ParentChunk.kb_id == kb_id)
+            chunks = query.all()
             by_id = {c.parent_id: c for c in chunks}
             return [
                 {"content": by_id[pid].content, "parent_id": pid,
-                 "metadata": {"source": by_id[pid].source, "doc_id": by_id[pid].doc_id}}
+                 "metadata": {"source": by_id[pid].source, "doc_id": by_id[pid].doc_id,
+                              "kb_id": by_id[pid].kb_id}}
                 for pid in parent_ids if pid in by_id
             ]
 

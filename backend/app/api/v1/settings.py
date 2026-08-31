@@ -1,15 +1,16 @@
 import httpx
 from fastapi import APIRouter, Request, Depends
 
-from app.core.config import get_settings, save_user_settings
+from app.core.config import get_user_settings, save_user_settings
 from app.api.v1.deps import get_current_user
+from app.domain.schemas import AppSettingsUpdateRequest
 
 router = APIRouter(tags=["settings"])
 
 
 @router.get("/settings")
 async def get_settings_api(user_id: str = Depends(get_current_user)):
-    settings = get_settings()
+    settings = get_user_settings(user_id)
     return {
         "llm": {
             "model": settings.llm.model,
@@ -30,16 +31,21 @@ async def get_settings_api(user_id: str = Depends(get_current_user)):
 
 
 @router.put("/settings")
-async def update_settings(body: dict, user_id: str = Depends(get_current_user)):
-    save_user_settings(body, user_id)
+async def update_settings(body: AppSettingsUpdateRequest, user_id: str = Depends(get_current_user)):
+    save_user_settings(body.model_dump(exclude_none=True), user_id)
     return {"ok": True}
 
 
 @router.get("/models")
 async def list_models(user_id: str = Depends(get_current_user)):
-    settings = get_settings()
+    settings = get_user_settings(user_id)
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        base_url = settings.llm.ollama_base_url
+        hostname = (httpx.URL(base_url).host or "").lower()
+        async with httpx.AsyncClient(
+            timeout=5,
+            trust_env=hostname not in {"localhost", "127.0.0.1", "::1"},
+        ) as client:
             resp = await client.get(f"{settings.llm.ollama_base_url}/api/tags")
             data = resp.json()
             return [
@@ -52,5 +58,5 @@ async def list_models(user_id: str = Depends(get_current_user)):
 
 @router.get("/models/current")
 async def current_model(user_id: str = Depends(get_current_user)):
-    settings = get_settings()
+    settings = get_user_settings(user_id)
     return {"model": settings.llm.model}

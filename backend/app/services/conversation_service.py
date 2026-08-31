@@ -18,6 +18,8 @@ class ConversationService:
         if conv_id:
             conv = self._db.conv_by_id(conv_id)
             if conv:
+                if conv.user_id != user_id:
+                    raise PermissionError("Conversation does not belong to current user")
                 return conv
         title = first_message[:50].replace("\n", " ") if first_message else "新对话"
         return self._db.conv_create(user_id,
