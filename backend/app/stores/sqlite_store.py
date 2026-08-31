@@ -11,6 +11,8 @@ from app.domain.models import (
     Base,
     Conversation,
     Document,
+    IngestionCheckpoint,
+    IngestionJob,
     KnowledgeBase,
     LongTermMemory,
     Message,
@@ -137,6 +139,120 @@ class SqliteStore:
                          .offset((page - 1) * page_size) \
                          .limit(page_size).all()
             return items, total
+
+    def docs_by_status(self, status: str) -> list[Document]:
+        with self.session() as s:
+            return s.query(Document).filter_by(status=status).all()
+
+    # ── 知识治理 checkpoint ──
+
+    def governance_job_create(self, document_id: str, config_hash: str = "") -> IngestionJob:
+        with self.session() as s:
+            job = IngestionJob(document_id=document_id, config_hash=config_hash)
+            s.add(job)
+            s.commit()
+            s.refresh(job)
+            return job
+
+    def governance_job_by_document(self, document_id: str) -> IngestionJob | None:
+        with self.session() as s:
+            return s.query(IngestionJob).filter_by(document_id=document_id).first()
+
+    def governance_job_update(self, job_id: str, **kwargs) -> IngestionJob | None:
+        with self.session() as s:
+            job = s.query(IngestionJob).filter_by(id=job_id).first()
+            if job:
+                for key, value in kwargs.items():
+                    setattr(job, key, value)
+                s.commit()
+                s.refresh(job)
+            return job
+
+    def governance_begin_retry(self, job_id: str, config_hash: str) -> IngestionJob | None:
+        with self.session() as s:
+            job = s.query(IngestionJob).filter_by(id=job_id).first()
+            if job:
+                job.attempt += 1
+                job.status = "processing"
+                job.current_stage = job.last_completed_stage or "received"
+                job.config_hash = config_hash
+                job.error = None
+                s.commit()
+                s.refresh(job)
+            return job
+
+    def governance_checkpoint(
+        self,
+        job_id: str,
+        attempt: int,
+        stage: str,
+        *,
+        status: str = "completed",
+        input_checksum: str = "",
+        output_checksum: str = "",
+        artifacts: dict | None = None,
+        error: str | None = None,
+    ) -> IngestionCheckpoint:
+        from datetime import datetime, timezone
+
+        with self.session() as s:
+            checkpoint = s.query(IngestionCheckpoint).filter_by(
+                job_id=job_id, attempt=attempt, stage=stage
+            ).first()
+            if checkpoint is None:
+                checkpoint = IngestionCheckpoint(
+                    job_id=job_id, attempt=attempt, stage=stage, status=status
+                )
+                s.add(checkpoint)
+            checkpoint.status = status
+            checkpoint.input_checksum = input_checksum
+            checkpoint.output_checksum = output_checksum
+            checkpoint.artifacts_json = json.dumps(artifacts or {}, ensure_ascii=False)
+            checkpoint.error = error
+            checkpoint.completed_at = datetime.now(timezone.utc) if status == "completed" else None
+            job = s.query(IngestionJob).filter_by(id=job_id).first()
+            if job:
+                job.current_stage = stage
+                if status == "completed":
+                    job.last_completed_stage = stage
+                    merged = json.loads(job.artifacts_json or "{}")
+                    merged.update(artifacts or {})
+                    job.artifacts_json = json.dumps(merged, ensure_ascii=False)
+            s.commit()
+            s.refresh(checkpoint)
+            return checkpoint
+
+    def governance_incomplete_jobs(self) -> list[IngestionJob]:
+        with self.session() as s:
+            return s.query(IngestionJob).filter(
+                IngestionJob.status.in_(("processing", "rolling_back"))
+            ).all()
+
+    def governance_checkpoints(self, job_id: str) -> list[IngestionCheckpoint]:
+        with self.session() as s:
+            items = s.query(IngestionCheckpoint).filter_by(job_id=job_id).all()
+            stage_order = {
+                "received": 0,
+                "deduped": 1,
+                "extract": 2,
+                "parsed": 2,
+                "chunk": 3,
+                "chunked": 3,
+                "store": 4,
+                "parents_staged": 4,
+                "vectors_staged": 5,
+                "validated": 6,
+                "published": 7,
+                "rollback": 8,
+            }
+            return sorted(
+                items,
+                key=lambda item: (
+                    item.attempt,
+                    stage_order.get(item.stage, 99),
+                    item.started_at,
+                ),
+            )
 
     # ── 知识库 ──
 
@@ -374,7 +490,12 @@ class SqliteStore:
 
     def parent_load_many(self, parent_ids: list[str], kb_id: str | None = None) -> list[dict]:
         with self.session() as s:
-            query = s.query(ParentChunk).filter(ParentChunk.parent_id.in_(parent_ids))
+            query = s.query(ParentChunk).join(
+                Document, ParentChunk.doc_id == Document.id
+            ).filter(
+                ParentChunk.parent_id.in_(parent_ids),
+                Document.status == DocumentStatus.READY.value,
+            )
             if kb_id:
                 query = query.filter(ParentChunk.kb_id == kb_id)
             chunks = query.all()
@@ -392,6 +513,10 @@ class SqliteStore:
             s.query(ParentChunk).filter_by(doc_id=doc_id).delete()
             s.commit()
             return count
+
+    def parent_count_by_doc_id(self, doc_id: str) -> int:
+        with self.session() as s:
+            return s.query(ParentChunk).filter_by(doc_id=doc_id).count()
 
     # ── 设置 ──
 

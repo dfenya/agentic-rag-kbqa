@@ -175,6 +175,56 @@ class QdrantStore:
         logger.info("qdrant.child.delete.ok", doc_id=doc_id, count=len(scroll))
         return len(scroll)
 
+    def set_publish_status(self, doc_id: str, status: str) -> None:
+        """原地更新文档全部子块的治理发布状态。"""
+        if not self.collection_exists():
+            return
+        self.client.set_payload(
+            collection_name=self.COLLECTION_NAME,
+            payload={"publish_status": status},
+            key="metadata",
+            points=qmodels.Filter(
+                must=[qmodels.FieldCondition(
+                    key="metadata.doc_id",
+                    match=qmodels.MatchValue(value=doc_id),
+                )]
+            ),
+            wait=True,
+        )
+
+    def validate_document(
+        self,
+        doc_id: str,
+        expected_child_count: int,
+        expected_parent_ids: set[str],
+    ) -> None:
+        """发布前验证子块数量、归属和父块引用完整性。"""
+        if not self.collection_exists():
+            raise ValueError("Qdrant 子块集合不存在")
+        points, _ = self.client.scroll(
+            collection_name=self.COLLECTION_NAME,
+            scroll_filter=qmodels.Filter(
+                must=[qmodels.FieldCondition(
+                    key="metadata.doc_id",
+                    match=qmodels.MatchValue(value=doc_id),
+                )]
+            ),
+            limit=max(expected_child_count + 1, 1),
+            with_payload=True,
+            with_vectors=False,
+        )
+        if len(points) != expected_child_count:
+            raise ValueError(
+                f"Qdrant 子块数量不一致: expected={expected_child_count}, actual={len(points)}"
+            )
+        referenced = {
+            str((point.payload or {}).get("metadata", {}).get("parent_id", ""))
+            for point in points
+        }
+        missing = referenced - expected_parent_ids
+        if "" in referenced or missing:
+            raise ValueError(f"子块引用了不存在的父块: {sorted(missing or {''})}")
+
     def similarity_search(
         self,
         query: str,

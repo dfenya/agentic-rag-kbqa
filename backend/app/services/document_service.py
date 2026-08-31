@@ -23,6 +23,7 @@ class DocumentService:
         self._upload_dir = Path(settings.storage.upload_dir)
         self._md_dir = Path(settings.storage.markdown_dir)
         self._chunks_dir = Path(settings.storage.chunks_dir)
+        self._settings = settings
 
     def list_documents(
         self, user_id: str,
@@ -78,7 +79,7 @@ class DocumentService:
                      child_deleted=child_count, parent_deleted=parent_count)
         return True
 
-    def retry(self, user_id: str, doc_id: str) -> Optional[Document]:
+    async def retry(self, user_id: str, doc_id: str) -> Optional[Document]:
         doc = self._db.doc_by_id(doc_id)
         if not doc or doc.status != DocumentStatus.ERROR.value:
             return None
@@ -89,66 +90,14 @@ class DocumentService:
         else:
             return None
 
-        from app.ingestion.chunker import DocumentChunker
-        from app.core.config import get_settings
+        from app.ingestion.pipeline import IngestionPipeline
 
-        settings = get_settings()
-        folder = doc.kb_id
-        if doc.kb_id:
-            kb = self._db.kb_by_id(doc.kb_id)
-            folder = kb_storage_folder(kb.name, doc.kb_id) if kb else doc.kb_id
-        md_path = (self._md_dir / folder if folder else self._md_dir) / f"{doc_id}.md"
-        if not md_path.exists():
-            self._db.doc_update(doc_id, error="Markdown 文件丢失，无法重试")
-            return self._db.doc_by_id(doc_id)
-
-        try:
-            self._db.doc_update(
-                doc_id, status=DocumentStatus.PROCESSING.value, error=None
-            )
-            self._qdrant.delete_by_doc_id(doc_id)
-            self._parent.delete_by_doc_id(doc_id)
-
-            chunker = DocumentChunker(
-                min_parent_size=settings.rag.min_parent_size,
-                max_parent_size=settings.rag.max_parent_size,
-                child_chunk_size=settings.rag.child_chunk_size,
-                child_chunk_overlap=settings.rag.child_chunk_overlap,
-            )
-
-            source_name = f"{Path(doc.filename).stem}.pdf" if doc.filename.endswith(".pdf") else doc.filename
-            parent_pairs, child_docs = chunker.chunk_file(
-                md_path, doc_id, source_name, sha256=doc.sha256,
-                kb_id=doc.kb_id,
-            )
-
-            self._parent.save_many(parent_pairs)
-            self._qdrant.add_documents(child_docs)
-
-            self._db.doc_update(
-                doc_id,
-                status=DocumentStatus.READY.value,
-                parent_count=len(parent_pairs),
-                child_count=len(child_docs),
-                error=None,
-            )
-            logger.info("document.retry.success", doc_id=doc_id)
-        except Exception as e:
-            logger.exception("document.retry.error", doc_id=doc_id)
-            try:
-                self._qdrant.delete_by_doc_id(doc_id)
-            except Exception:
-                logger.exception("document.retry.rollback_qdrant.error", doc_id=doc_id)
-            try:
-                self._parent.delete_by_doc_id(doc_id)
-            except Exception:
-                logger.exception("document.retry.rollback_parent.error", doc_id=doc_id)
-            self._db.doc_update(
-                doc_id,
-                status=DocumentStatus.ERROR.value,
-                parent_count=0,
-                child_count=0,
-                error=str(e),
-            )
-
+        pipeline = IngestionPipeline(
+            settings=self._settings,
+            sqlite=self._db,
+            qdrant=self._qdrant,
+            parent=self._parent,
+            kb_id=doc.kb_id,
+        )
+        await pipeline.retry_document(doc)
         return self._db.doc_by_id(doc_id)

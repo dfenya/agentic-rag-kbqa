@@ -136,6 +136,50 @@ class ParentChunk(Base):
     kb_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+class IngestionJob(Base):
+    """知识治理任务主表：记录当前状态和最后一个可靠 checkpoint。"""
+
+    __tablename__ = "ingestion_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="processing", nullable=False)
+    current_stage: Mapped[str] = mapped_column(String(32), default="received", nullable=False)
+    last_completed_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    artifacts_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class IngestionCheckpoint(Base):
+    """阶段级 checkpoint；同一次 attempt 的同一阶段只保留一条可靠结果。"""
+
+    __tablename__ = "ingestion_checkpoints"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_checksum: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    output_checksum: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    artifacts_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt", "stage", name="uq_checkpoint_job_attempt_stage"),
+    )
+
+
 class Setting(Base):
     __tablename__ = "settings"
 

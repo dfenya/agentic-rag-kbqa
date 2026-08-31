@@ -1,5 +1,7 @@
 from typing import Dict, List
 
+from app.domain.enums import DocumentStatus
+
 
 class ParentStore:
     """父块存储，底层走 SQLite"""
@@ -16,3 +18,7 @@ class ParentStore:
 
     def delete_by_doc_id(self, doc_id: str) -> int:
         return self._db.parent_delete_by_doc_id(doc_id)
+
+    def is_document_published(self, doc_id: str) -> bool:
+        doc = self._db.doc_by_id(doc_id)
+        return bool(doc and doc.status == DocumentStatus.READY.value)

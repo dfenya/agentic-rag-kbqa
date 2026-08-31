@@ -53,6 +53,12 @@ class ToolFactory:
             # 构造检索参数，可选附带知识库过滤
             search_kwargs = {"k": k, "score_threshold": self.score_threshold}
             filter_conditions = []
+            filter_conditions.append(
+                qmodels.FieldCondition(
+                    key="metadata.publish_status",
+                    match=qmodels.MatchValue(value="active"),
+                )
+            )
             if self.kb_id:
                 filter_conditions.append(
                     qmodels.FieldCondition(
@@ -64,6 +70,14 @@ class ToolFactory:
                 search_kwargs["filter"] = qmodels.Filter(must=filter_conditions)
 
             results = self.collection.similarity_search(query, **search_kwargs)
+            # Qdrant 是最终一致的外部存储；即使补偿清理暂时失败，也必须由
+            # SQLite 发布清单做第二道校验，禁止 ERROR/staging 文档进入回答。
+            results = [
+                doc for doc in results
+                if self.parent_store.is_document_published(
+                    str(doc.metadata.get("doc_id", ""))
+                )
+            ]
             if not results:
                 return "NO_RELEVANT_CHUNKS"
 

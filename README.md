@@ -91,9 +91,11 @@ npm run build
 
 ### 文档处理
 
-上传 PDF/Markdown → SHA256 去重（同 KB 内） → MinerU 转 Markdown → 父子分块 → Qdrant 向量化。
+上传 PDF/Markdown → SHA256 去重（同 KB 内） → MinerU 转 Markdown → 父子分块 → 子块向量化（BGE 稠密向量 + BM25 稀疏向量）→ 写入 Qdrant 暂存索引 → 质量校验 → 发布。
 
 Web 界面实时显示进度：去重检查 → MinerU 解析 → 文档分块 → 向量入库。失败时回滚 Qdrant/父块索引，但保留文档记录和中间文件供重试。
+
+治理过程通过 SQLite 中的 `ingestion_jobs` 与 `ingestion_checkpoints` 持久化。每个阶段记录 attempt、输入/输出校验值和产物位置；检索只读取 `publish_status=active` 的子块。失败时执行幂等补偿，重试在配置未变化时直接复用 Markdown/chunk checkpoint。可通过 `GET /api/v1/documents/{id}/governance` 查看完整治理轨迹。
 
 MinerU 配置文件：`backend/config/mineru.yml`。
 
@@ -197,6 +199,7 @@ scripts/
 | GET | `/api/v1/conversations/{id}/messages` | 是 | 消息历史 |
 | GET/DELETE | `/api/v1/documents` | 是 | 文档管理 |
 | POST | `/api/v1/documents` | 是 | 上传文档 |
+| GET | `/api/v1/documents/{id}/governance` | 是 | 查看知识治理 checkpoint |
 | GET/POST/DELETE | `/api/v1/knowledge-bases` | 是 | 知识库 |
 | GET/PATCH/DELETE | `/api/v1/memories` | 是 | 长期记忆 |
 | GET/PUT | `/api/v1/settings` | 是 | 系统设置 |

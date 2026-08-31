@@ -112,6 +112,43 @@ class Container:
 
         self.parent = ParentStore(self.sqlite)
 
+        # 兼容升级前已成功入库、但尚无 publish_status payload 的向量。
+        for document in self.sqlite.docs_by_status("ready"):
+            try:
+                self.qdrant.set_publish_status(document.id, "active")
+            except Exception as e:
+                logger.warning(
+                    "governance.publish_status_migration.fail",
+                    doc_id=document.id,
+                    error=str(e),
+                )
+
+        # 上次进程异常退出时，processing/rolling_back 任务可能留下暂存数据。
+        # 启动阶段做幂等补偿并保留 checkpoint，随后可从中间产物重试。
+        for job in self.sqlite.governance_incomplete_jobs():
+            try:
+                self.qdrant.delete_by_doc_id(job.document_id)
+                self.parent.delete_by_doc_id(job.document_id)
+                self.sqlite.doc_update(
+                    job.document_id,
+                    status="error",
+                    parent_count=0,
+                    child_count=0,
+                    error="上次知识治理任务异常中断，暂存索引已回滚，可重试",
+                )
+                self.sqlite.governance_job_update(
+                    job.id,
+                    status="failed",
+                    current_stage="rollback",
+                    error="process interrupted",
+                )
+            except Exception as e:
+                logger.error(
+                    "governance.startup_recovery.fail",
+                    doc_id=job.document_id,
+                    error=str(e),
+                )
+
         self.long_term_memory_store = LongTermMemoryStore(self.settings)
         self.long_term_memory_store.init(self.qdrant.client, self.qdrant._dense)
 
